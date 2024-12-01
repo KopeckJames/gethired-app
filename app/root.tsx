@@ -1,45 +1,79 @@
+import type { LinksFunction } from "@remix-run/node";
 import {
   Links,
+  LiveReload,
   Meta,
   Outlet,
   Scripts,
   ScrollRestoration,
 } from "@remix-run/react";
-import type { LinksFunction } from "@remix-run/node";
-
-import "./tailwind.css";
+import "~/styles/tailwind.css";
+import { NotificationProvider } from "~/context/NotificationContext";
+import { ApplicationProvider } from "~/context/ApplicationContext";
+import Layout from "~/components/Layout";
 
 export const links: LinksFunction = () => [
-  { rel: "preconnect", href: "https://fonts.googleapis.com" },
   {
-    rel: "preconnect",
-    href: "https://fonts.gstatic.com",
-    crossOrigin: "anonymous",
-  },
-  {
-    rel: "stylesheet",
-    href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap",
+    rel: "icon",
+    href: "/favicon.ico",
+    type: "image/x-icon",
   },
 ];
 
-export function Layout({ children }: { children: React.ReactNode }) {
+export default function App() {
   return (
-    <html lang="en">
+    <html lang="en" className="h-full">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="description" content="Track and manage your job applications with GetHired!" />
+        <meta name="theme-color" content="#000000" />
+        <title>GetHired! - Job Application Tracker</title>
         <Meta />
         <Links />
       </head>
-      <body>
-        {children}
+      <body className="h-full bg-white text-slate-900 antialiased">
+        <NotificationProvider>
+          <ApplicationProvider>
+            <Layout>
+              <Outlet />
+            </Layout>
+          </ApplicationProvider>
+        </NotificationProvider>
         <ScrollRestoration />
         <Scripts />
+        <LiveReload />
       </body>
     </html>
   );
 }
 
-export default function App() {
-  return <Outlet />;
+// Error boundary
+export function ErrorBoundary({ error }: { error: Error }) {
+  return (
+    <html lang="en" className="h-full">
+      <head>
+        <title>Error - GetHired!</title>
+        <Meta />
+        <Links />
+      </head>
+      <body className="flex h-full flex-col items-center justify-center bg-white text-slate-900">
+        <div className="space-y-4 text-center">
+          <h1 className="text-4xl font-bold">Oops! Something went wrong</h1>
+          <p className="text-lg text-slate-600">
+            {error.message}
+          </p>
+          <div>
+            <a
+              href="/"
+              className="text-blue-600 hover:text-blue-700"
+            >
+              Go back home →
+            </a>
+          </div>
+        </div>
+        <Scripts />
+      </body>
+    </html>
+  );
 }

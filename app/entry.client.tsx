@@ -8,6 +8,15 @@ import { RemixBrowser } from "@remix-run/react";
 import { startTransition, StrictMode } from "react";
 import { hydrateRoot } from "react-dom/client";
 
+// Initialize theme before hydration
+const initializeTheme = () => {
+  const theme = localStorage.getItem("theme") || 
+    (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.classList.add(theme);
+};
+
+initializeTheme();
+
 startTransition(() => {
   hydrateRoot(
     document,
