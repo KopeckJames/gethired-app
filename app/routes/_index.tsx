@@ -23,9 +23,9 @@ export default function Index() {
         <div className="mx-auto max-w-2xl text-center">
           <h1 className="text-4xl font-bold tracking-tight sm:text-6xl">
             Track Your Job Applications with{' '}
-            <span className="text-blue-600 dark:text-blue-500">GetHired!</span>
+            <span className="text-blue-600">GetHired!</span>
           </h1>
-          <p className="mt-6 text-lg leading-8 text-slate-600 dark:text-slate-400">
+          <p className="mt-6 text-lg leading-8 text-slate-600">
             Streamline your job search process with our intuitive application tracking system.
             Stay organized, never miss a follow-up, and increase your chances of landing your dream job.
           </p>
@@ -35,7 +35,7 @@ export default function Index() {
             </Link>
             <a
               href="#features"
-              className="text-sm font-semibold leading-6 text-slate-900 dark:text-slate-100"
+              className="text-sm font-semibold leading-6 text-slate-900"
             >
               Learn more <span aria-hidden="true">→</span>
             </a>
@@ -47,13 +47,13 @@ export default function Index() {
       <div id="features" className="py-24 sm:py-32">
         <div className="mx-auto max-w-7xl px-6 lg:px-8">
           <div className="mx-auto max-w-2xl lg:text-center">
-            <h2 className="text-base font-semibold leading-7 text-blue-600 dark:text-blue-500">
+            <h2 className="text-base font-semibold leading-7 text-blue-600">
               Features
             </h2>
             <p className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">
               Everything you need to manage your job search
             </p>
-            <p className="mt-6 text-lg leading-8 text-slate-600 dark:text-slate-400">
+            <p className="mt-6 text-lg leading-8 text-slate-600">
               GetHired! provides all the tools you need to organize your job applications,
               track your progress, and stay on top of your job search journey.
             </p>
@@ -63,7 +63,7 @@ export default function Index() {
               <div className="flex flex-col">
                 <dt className="flex items-center gap-x-3 text-base font-semibold leading-7">
                   <svg
-                    className="h-5 w-5 flex-none text-blue-600 dark:text-blue-500"
+                    className="h-5 w-5 flex-none text-blue-600"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -77,7 +77,7 @@ export default function Index() {
                   </svg>
                   Application Tracking
                 </dt>
-                <dd className="mt-4 flex flex-auto flex-col text-base leading-7 text-slate-600 dark:text-slate-400">
+                <dd className="mt-4 flex flex-auto flex-col text-base leading-7 text-slate-600">
                   <p className="flex-auto">
                     Keep track of all your job applications in one place. Monitor status,
                     important dates, and follow-ups with our intuitive interface.
@@ -87,7 +87,7 @@ export default function Index() {
               <div className="flex flex-col">
                 <dt className="flex items-center gap-x-3 text-base font-semibold leading-7">
                   <svg
-                    className="h-5 w-5 flex-none text-blue-600 dark:text-blue-500"
+                    className="h-5 w-5 flex-none text-blue-600"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -101,7 +101,7 @@ export default function Index() {
                   </svg>
                   Analytics & Insights
                 </dt>
-                <dd className="mt-4 flex flex-auto flex-col text-base leading-7 text-slate-600 dark:text-slate-400">
+                <dd className="mt-4 flex flex-auto flex-col text-base leading-7 text-slate-600">
                   <p className="flex-auto">
                     Get valuable insights into your job search progress with detailed
                     analytics and statistics to help you improve your strategy.
@@ -111,7 +111,7 @@ export default function Index() {
               <div className="flex flex-col">
                 <dt className="flex items-center gap-x-3 text-base font-semibold leading-7">
                   <svg
-                    className="h-5 w-5 flex-none text-blue-600 dark:text-blue-500"
+                    className="h-5 w-5 flex-none text-blue-600"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -125,7 +125,7 @@ export default function Index() {
                   </svg>
                   Smart Reminders
                 </dt>
-                <dd className="mt-4 flex flex-auto flex-col text-base leading-7 text-slate-600 dark:text-slate-400">
+                <dd className="mt-4 flex flex-auto flex-col text-base leading-7 text-slate-600">
                   <p className="flex-auto">
                     Never miss an important deadline or follow-up with our smart
                     reminder system that keeps you on track throughout your job search.
