@@ -1,35 +1,25 @@
 import { Link } from "@remix-run/react";
+import Navigation from "./Navigation";
+import LoginButton from "./LoginButton";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-full">
-      <nav className="border-b border-slate-200 bg-white">
+      <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="flex h-16 justify-between">
-            <div className="flex">
-              <div className="flex flex-shrink-0 items-center">
-                <Link to="/" className="text-xl font-bold text-slate-900">
-                  GetHired!
-                </Link>
-              </div>
-              <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
-                <Link
-                  to="/"
-                  className="inline-flex items-center border-b-2 border-transparent px-1 pt-1 text-sm font-medium text-slate-500 hover:border-slate-300 hover:text-slate-700"
-                >
-                  Home
-                </Link>
-                <Link
-                  to="/applications"
-                  className="inline-flex items-center border-b-2 border-transparent px-1 pt-1 text-sm font-medium text-slate-500 hover:border-slate-300 hover:text-slate-700"
-                >
-                  Applications
-                </Link>
-              </div>
+          <div className="flex h-16 items-center justify-between">
+            <div className="flex-shrink-0">
+              <Link to="/" className="text-xl font-bold text-slate-900">
+                GetHired!
+              </Link>
+            </div>
+            <div>
+              <LoginButton />
             </div>
           </div>
         </div>
-      </nav>
+        <Navigation />
+      </header>
 
       <main>
         <div className="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">{children}</div>
