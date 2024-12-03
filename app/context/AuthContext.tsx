@@ -1,65 +1,69 @@
 import { createContext, useContext, useState, useEffect } from "react";
-import { supabase, isSupabaseInitialized } from "~/utils/supabase.client";
-import type { Session } from "@supabase/supabase-js";
+import type { User, SerializedUser } from "~/types/user";
+import { deserializeUser } from "~/types/user";
+import { useRevalidator, useNavigate } from "@remix-run/react";
 
 interface AuthContextType {
-  accessToken: string | null;
-  setAccessToken: (token: string | null) => void;
   isAuthenticated: boolean;
-  session: Session | null;
+  user: User | null;
   isInitialized: boolean;
+}
+
+interface AuthProviderProps {
+  children: React.ReactNode;
+  initialUser: SerializedUser | null;
+  initialAuthState: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
-  const [isInitialized, setIsInitialized] = useState(false);
+export function AuthProvider({ children, initialUser, initialAuthState }: AuthProviderProps) {
+  const [user, setUser] = useState<User | null>(initialUser ? deserializeUser(initialUser) : null);
+  const [isInitialized, setIsInitialized] = useState(true);
+  const revalidator = useRevalidator();
+  const navigate = useNavigate();
 
   useEffect(() => {
-    if (!isSupabaseInitialized()) {
-      console.error('Supabase is not properly initialized');
-      return;
-    }
+    const verifyAuth = async () => {
+      try {
+        const response = await fetch('/auth/verify', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          credentials: 'include',
+        });
 
-    setIsInitialized(true);
+        const data = await response.json();
 
-    // Check for existing session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setAccessToken(session?.access_token ?? null);
-    });
+        if (!response.ok) {
+          setUser(null);
+          document.cookie = 'auth_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
+          navigate('/?error=' + encodeURIComponent(data.error || 'Authentication failed. Please sign in again.'));
+          return;
+        }
 
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      setAccessToken(session?.access_token ?? null);
-
-      // Store session in localStorage
-      if (session) {
-        localStorage.setItem('supabase.auth.token', session.access_token);
-      } else {
-        localStorage.removeItem('supabase.auth.token');
+        if (data.user) {
+          setUser(deserializeUser(data.user));
+        }
+      } catch (error) {
+        console.error('Error verifying auth:', error);
+        setUser(null);
+        document.cookie = 'auth_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
+        navigate('/?error=' + encodeURIComponent('Authentication error. Please try again.'));
       }
-    });
-
-    // Check for stored token on mount
-    const storedToken = localStorage.getItem('supabase.auth.token');
-    if (storedToken) {
-      setAccessToken(storedToken);
-    }
-
-    return () => {
-      subscription.unsubscribe();
     };
-  }, []);
+
+    // Only verify if we think we're authenticated
+    if (initialAuthState) {
+      verifyAuth();
+    }
+  }, [initialAuthState, navigate]);
 
   const value = {
-    accessToken,
-    setAccessToken,
-    isAuthenticated: !!session,
-    session,
+    isAuthenticated: !!user,
+    user,
     isInitialized,
   };
 

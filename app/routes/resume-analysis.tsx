@@ -1,27 +1,61 @@
-import { json } from "@remix-run/node";
+import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
-import { getDocumentsByType } from "~/utils/db.server";
+import { getDocumentsByType } from "~/models/document.server";
 import ResumeAnalysis from "~/components/ResumeAnalysis";
-import type { Document } from "~/types/document";
+import type { SerializedDocument } from "~/types/document";
+import { verifyToken } from "~/models/user.server";
+import { serializeDocument } from "~/types/document";
 
 interface LoaderData {
-  resumes: Document[];
-  jobDescriptions: Document[];
+  resumes: SerializedDocument[];
+  jobDescriptions: SerializedDocument[];
   error: string | null;
 }
 
-export async function loader() {
+export async function loader({ request }: LoaderFunctionArgs) {
+  // Get token from cookie
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split('; ').map(cookie => {
+      const [name, value] = cookie.split('=');
+      return [name, decodeURIComponent(value)];
+    })
+  );
+  
+  const token = cookies.auth_token;
+
+  if (!token) {
+    return json(
+      { 
+        resumes: [], 
+        jobDescriptions: [], 
+        error: "Please sign in to use this feature" 
+      },
+      { status: 401 }
+    );
+  }
+
   try {
-    // For now, we'll use a mock user ID
-    const mockUserId = "mock-user-id";
+    const user = await verifyToken(token);
+    if (!user) {
+      return json(
+        { 
+          resumes: [], 
+          jobDescriptions: [], 
+          error: "Please sign in to use this feature" 
+        },
+        { status: 401 }
+      );
+    }
+
     const [resumes, jobDescriptions] = await Promise.all([
-      getDocumentsByType("resume", mockUserId),
-      getDocumentsByType("job_description", mockUserId),
+      getDocumentsByType("resume", user.id),
+      getDocumentsByType("job_description", user.id),
     ]);
 
     return json<LoaderData>({ 
-      resumes: resumes || [], 
-      jobDescriptions: jobDescriptions || [], 
+      resumes: resumes.map(serializeDocument), 
+      jobDescriptions: jobDescriptions.map(serializeDocument), 
       error: null 
     });
   } catch (error) {

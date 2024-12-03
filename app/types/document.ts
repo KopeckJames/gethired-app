@@ -1,31 +1,40 @@
-export type DocumentType = 'resume' | 'job_description' | 'cover_letter' | 'other';
+export type DocumentType = 'resume' | 'cover_letter' | 'job_description' | 'other';
 
 export interface Document {
   id: string;
+  userId: string;
+  name: string;
+  type: DocumentType;
+  content: string;
+  uploadedAt: Date;
+}
+
+export interface SerializedDocument {
+  id: string;
+  userId: string;
   name: string;
   type: DocumentType;
   content: string;
   uploadedAt: string;
-  userId: string;
-  createdAt?: string;
-  updatedAt?: string;
 }
 
-export interface DocumentAnalysis {
-  score: number;
-  criteriaScores: {
-    keywordMatch: number;
-    formatting: number;
-    skillsAlignment: number;
-    experienceRelevance: number;
+export interface DocumentCreate {
+  name: string;
+  type: DocumentType;
+  content: string;
+  userId: string;
+}
+
+export function deserializeDocument(doc: SerializedDocument): Document {
+  return {
+    ...doc,
+    uploadedAt: new Date(doc.uploadedAt),
   };
-  analysis: {
-    keywordsFound: string[];
-    missingKeywords: string[];
-    formattingIssues: string[];
-    strengths: string[];
-    weaknesses: string[];
+}
+
+export function serializeDocument(doc: Document): SerializedDocument {
+  return {
+    ...doc,
+    uploadedAt: doc.uploadedAt.toISOString(),
   };
-  recommendations: string[];
-  summary: string;
 }

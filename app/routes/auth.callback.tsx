@@ -1,71 +1,76 @@
-import { LoaderFunctionArgs, redirect } from "@remix-run/node";
-import { supabase } from "~/utils/supabase.server";
+import { redirect, type LoaderFunctionArgs } from "@remix-run/node";
+import { authenticateWithGoogle } from "~/models/user.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
   const code = url.searchParams.get('code');
   const error = url.searchParams.get('error');
-  const error_description = url.searchParams.get('error_description');
-  const next = url.searchParams.get('next') || '/';
 
-  // Handle OAuth errors
   if (error) {
-    console.error('OAuth error:', error, error_description);
-    return redirect(`/?error=${encodeURIComponent(error_description || 'Authentication failed')}`);
+    return redirect('/?error=' + encodeURIComponent(error));
   }
 
   if (!code) {
-    console.error('No code provided in callback');
-    return redirect('/?error=missing_code');
+    return redirect('/?error=' + encodeURIComponent('No authorization code provided'));
   }
 
   try {
-    const { data, error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
-    
-    if (sessionError) {
-      console.error('Error exchanging code for session:', sessionError);
-      return redirect(`/?error=${encodeURIComponent(sessionError.message)}`);
+    // Exchange the code for Google user info
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        code,
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        redirect_uri: `${url.origin}/auth/callback`,
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to exchange code for token');
     }
 
-    if (!data.session) {
-      console.error('No session data received');
-      return redirect('/?error=no_session');
+    const { access_token } = await response.json();
+
+    // Get user info from Google
+    const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+      },
+    });
+
+    if (!userInfoResponse.ok) {
+      throw new Error('Failed to get user info');
     }
 
-    // Set the access token in a cookie
+    const googleUser = await userInfoResponse.json();
+
+    // Create or update user in our database
+    const { user, token } = await authenticateWithGoogle({
+      email: googleUser.email,
+      name: googleUser.name,
+      picture: googleUser.picture,
+    });
+
+    // Set auth cookie
     const headers = new Headers();
     headers.append(
       'Set-Cookie',
-      `access_token=${data.session.access_token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 7}` // 1 week
+      `auth_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 7}` // 7 days
     );
 
-    // Set refresh token if available
-    if (data.session.refresh_token) {
-      headers.append(
-        'Set-Cookie',
-        `refresh_token=${data.session.refresh_token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}` // 30 days
-      );
-    }
-
-    // Store user metadata if needed
-    if (data.session.user) {
-      const { email, user_metadata } = data.session.user;
-      console.log('User authenticated:', email, user_metadata);
-      
-      // You could store additional user data in your database here
-      // await storeUserData(data.session.user);
-    }
-
-    return redirect(next, {
+    // Redirect to home page with success message
+    return redirect('/', {
       headers,
     });
   } catch (error) {
-    console.error('Error in auth callback:', error);
-    return redirect('/?error=auth_error');
+    console.error('Auth callback error:', error);
+    return redirect(
+      '/?error=' + encodeURIComponent('Authentication failed. Please try again.')
+    );
   }
-}
-
-// This route doesn't need a component since it just handles the redirect
-export default function AuthCallback() {
-  return null;
 }

@@ -1,4 +1,4 @@
-import { json } from "@remix-run/node";
+import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useRevalidator } from "@remix-run/react";
 import Card from "~/components/Card";
 import Button from "~/components/Button";
@@ -8,36 +8,69 @@ import Modal from "~/components/Modal";
 import Alert from "~/components/Alert";
 import EmptyState from "~/components/EmptyState";
 import { useState, useRef } from "react";
-import type { Document, DocumentType } from "~/types/document";
-import { getDocuments } from "~/utils/db.server";
+import type { DocumentType, SerializedDocument } from "~/types/document";
+import { getDocuments } from "~/models/document.server";
+import { useAuth } from "~/context/AuthContext";
+import { verifyToken } from "~/models/user.server";
+import { serializeDocument } from "~/types/document";
 
 interface LoaderData {
-  documents: Document[];
+  documents: SerializedDocument[];
   error: string | null;
 }
 
-export async function loader() {
+export async function loader({ request }: LoaderFunctionArgs) {
+  // Get token from cookie
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split('; ').map(cookie => {
+      const [name, value] = cookie.split('=');
+      return [name, decodeURIComponent(value)];
+    })
+  );
+  
+  const token = cookies.auth_token;
+
+  if (!token) {
+    return json(
+      { documents: [], error: "Please sign in to view documents" },
+      { status: 401 }
+    );
+  }
+
   try {
-    // For now, we'll use a mock user ID
-    const mockUserId = "mock-user-id";
-    const documents = await getDocuments(mockUserId);
-    return json<LoaderData>({ documents, error: null });
+    const user = await verifyToken(token);
+    if (!user) {
+      return json(
+        { documents: [], error: "Please sign in to view documents" },
+        { status: 401 }
+      );
+    }
+
+    const documents = await getDocuments(user.id);
+    return json<LoaderData>(
+      { 
+        documents: documents.map(serializeDocument), 
+        error: null 
+      }
+    );
   } catch (error) {
     console.error('Error fetching documents:', error);
-    return json<LoaderData>({ 
-      documents: [], 
-      error: "Failed to load documents" 
-    });
+    return json<LoaderData>(
+      { documents: [], error: "Failed to load documents" },
+      { status: 500 }
+    );
   }
 }
 
 export default function Documents() {
   const { documents, error: loaderError } = useLoaderData<typeof loader>();
-  const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
+  const [selectedDoc, setSelectedDoc] = useState<SerializedDocument | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [docType, setDocType] = useState<DocumentType>("resume");
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const revalidator = useRevalidator();
 
@@ -52,21 +85,32 @@ export default function Documents() {
     );
   }
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (!file) return;
+    if (file) {
+      setSelectedFile(file);
+      setError(null);
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile) {
+      setError("Please select a file");
+      return;
+    }
 
     setIsUploading(true);
     setError(null);
 
     const formData = new FormData();
-    formData.append("file", file);
+    formData.append("file", selectedFile);
     formData.append("type", docType);
 
     try {
-      const response = await fetch("/api/documents/upload", {
+      const response = await fetch("/api/documents.upload", {
         method: "POST",
         body: formData,
+        credentials: 'include'
       });
 
       if (!response.ok) {
@@ -78,6 +122,7 @@ export default function Documents() {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+      setSelectedFile(null);
       setShowUploadModal(false);
       
       // Refresh the documents list
@@ -93,6 +138,7 @@ export default function Documents() {
     try {
       const response = await fetch(`/api/documents/${id}`, {
         method: "DELETE",
+        credentials: 'include'
       });
 
       if (!response.ok) {
@@ -168,7 +214,13 @@ export default function Documents() {
 
       <Modal
         isOpen={showUploadModal}
-        onClose={() => setShowUploadModal(false)}
+        onClose={() => {
+          setShowUploadModal(false);
+          setSelectedFile(null);
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+        }}
         title="Upload Document"
       >
         <div className="space-y-4">
@@ -188,13 +240,35 @@ export default function Documents() {
             ref={fileInputRef}
             type="file"
             accept=".pdf,.doc,.docx,.txt"
-            onChange={handleFileUpload}
+            onChange={handleFileChange}
             disabled={isUploading}
           />
 
           <p className="text-sm text-gray-500">
             Supported formats: PDF, DOC, DOCX, TXT
           </p>
+
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowUploadModal(false);
+                setSelectedFile(null);
+                if (fileInputRef.current) {
+                  fileInputRef.current.value = "";
+                }
+              }}
+              disabled={isUploading}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleUpload}
+              disabled={!selectedFile || isUploading}
+            >
+              {isUploading ? "Uploading..." : "Upload"}
+            </Button>
+          </div>
         </div>
       </Modal>
 

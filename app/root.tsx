@@ -1,7 +1,6 @@
 import type { LinksFunction } from "@remix-run/node";
 import {
   Links,
-  LiveReload,
   Meta,
   Outlet,
   Scripts,
@@ -14,10 +13,12 @@ import { NotificationProvider } from "~/context/NotificationContext";
 import { ApplicationProvider } from "~/context/ApplicationContext";
 import { AuthProvider } from "~/context/AuthContext";
 import Layout from "~/components/Layout";
-import { getPublicEnv } from "~/utils/env.server";
-import { json } from "@remix-run/node";
+import { getPublicEnv, validatePublicEnv } from "~/utils/env.server";
+import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { useEffect } from "react";
 import Alert from "~/components/Alert";
+import { verifyToken } from "~/models/user.server";
+import { serializeUser } from "~/types/user";
 
 export const links: LinksFunction = () => [
   {
@@ -27,20 +28,44 @@ export const links: LinksFunction = () => [
   },
 ];
 
-export async function loader() {
+export async function loader({ request }: LoaderFunctionArgs) {
+  validatePublicEnv();
   const env = getPublicEnv();
+
+  // Get token from cookie
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split('; ').map(cookie => {
+      const [name, value] = cookie.split('=');
+      return [name, decodeURIComponent(value)];
+    })
+  );
   
-  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
-    console.error('Missing required environment variables');
+  const token = cookies.auth_token;
+  let user = null;
+  let isAuthenticated = false;
+
+  if (token) {
+    try {
+      const verifiedUser = await verifyToken(token);
+      if (verifiedUser) {
+        user = serializeUser(verifiedUser);
+        isAuthenticated = true;
+      }
+    } catch (error) {
+      console.error('Error verifying token:', error);
+    }
   }
 
   return json({
     ENV: env,
+    user,
+    isAuthenticated
   });
 }
 
 export default function App() {
-  const { ENV } = useLoaderData<typeof loader>();
+  const { ENV, user, isAuthenticated } = useLoaderData<typeof loader>();
   const [searchParams] = useSearchParams();
   const error = searchParams.get('error');
 
@@ -72,7 +97,7 @@ export default function App() {
         <Links />
       </head>
       <body className="h-full bg-white text-slate-900 antialiased">
-        <AuthProvider>
+        <AuthProvider initialUser={user} initialAuthState={isAuthenticated}>
           <NotificationProvider>
             <ApplicationProvider>
               <Layout>
@@ -99,7 +124,6 @@ export default function App() {
           }}
         />
         <Scripts />
-        <LiveReload />
       </body>
     </html>
   );

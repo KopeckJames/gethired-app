@@ -1,12 +1,13 @@
 import { jsx, jsxs, Fragment } from "react/jsx-runtime";
 import { PassThrough } from "node:stream";
 import { createReadableStreamFromReadable, json, redirect } from "@remix-run/node";
-import { RemixServer, NavLink, Link, useLoaderData, useSearchParams, Meta, Links, Outlet, ScrollRestoration, Scripts, LiveReload, useRevalidator } from "@remix-run/react";
+import { RemixServer, useRevalidator, useNavigate, NavLink, Link, useLoaderData, useSearchParams, Meta, Links, Outlet, ScrollRestoration, Scripts } from "@remix-run/react";
 import { isbot } from "isbot";
 import { renderToPipeableStream } from "react-dom/server";
 import { useState, useEffect, createContext, useCallback, useContext, useReducer, forwardRef, useRef } from "react";
 import { HomeIcon, BriefcaseIcon, DocumentTextIcon, DocumentMagnifyingGlassIcon, ChatBubbleLeftRightIcon, MicrophoneIcon, StopIcon, PlayIcon, PaperAirplaneIcon } from "@heroicons/react/24/outline";
-import { createClient } from "@supabase/supabase-js";
+import { MongoClient, ObjectId } from "mongodb";
+import jwt from "jsonwebtoken";
 import { createPortal } from "react-dom";
 const ABORT_DELAY = 5e3;
 function handleRequest(request, responseStatusCode, responseHeaders, remixContext, loadContext) {
@@ -340,45 +341,59 @@ function useApplicationContext() {
   }
   return context;
 }
-const supabase$1 = void 0;
-const isSupabaseInitialized = void 0;
+function deserializeUser(user) {
+  return {
+    ...user,
+    createdAt: new Date(user.createdAt)
+  };
+}
+function serializeUser(user) {
+  return {
+    ...user,
+    createdAt: user.createdAt.toISOString()
+  };
+}
 const AuthContext = createContext(null);
-function AuthProvider({ children }) {
-  const [accessToken, setAccessToken] = useState(null);
-  const [session, setSession] = useState(null);
-  const [isInitialized, setIsInitialized] = useState(false);
+function AuthProvider({ children, initialUser, initialAuthState }) {
+  const [user, setUser] = useState(initialUser ? deserializeUser(initialUser) : null);
+  const [isInitialized, setIsInitialized] = useState(true);
+  useRevalidator();
+  const navigate = useNavigate();
   useEffect(() => {
-    if (!isSupabaseInitialized()) {
-      console.error("Supabase is not properly initialized");
-      return;
-    }
-    setIsInitialized(true);
-    supabase$1.auth.getSession().then(({ data: { session: session2 } }) => {
-      setSession(session2);
-      setAccessToken((session2 == null ? void 0 : session2.access_token) ?? null);
-    });
-    const { data: { subscription } } = supabase$1.auth.onAuthStateChange((_event, session2) => {
-      setSession(session2);
-      setAccessToken((session2 == null ? void 0 : session2.access_token) ?? null);
-      if (session2) {
-        localStorage.setItem("supabase.auth.token", session2.access_token);
-      } else {
-        localStorage.removeItem("supabase.auth.token");
+    const verifyAuth = async () => {
+      try {
+        const response = await fetch("/auth/verify", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+          credentials: "include"
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          setUser(null);
+          document.cookie = "auth_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;";
+          navigate("/?error=" + encodeURIComponent(data.error || "Authentication failed. Please sign in again."));
+          return;
+        }
+        if (data.user) {
+          setUser(deserializeUser(data.user));
+        }
+      } catch (error) {
+        console.error("Error verifying auth:", error);
+        setUser(null);
+        document.cookie = "auth_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;";
+        navigate("/?error=" + encodeURIComponent("Authentication error. Please try again."));
       }
-    });
-    const storedToken = localStorage.getItem("supabase.auth.token");
-    if (storedToken) {
-      setAccessToken(storedToken);
-    }
-    return () => {
-      subscription.unsubscribe();
     };
-  }, []);
+    if (initialAuthState) {
+      verifyAuth();
+    }
+  }, [initialAuthState, navigate]);
   const value = {
-    accessToken,
-    setAccessToken,
-    isAuthenticated: !!session,
-    session,
+    isAuthenticated: !!user,
+    user,
     isInitialized
   };
   return /* @__PURE__ */ jsx(AuthContext.Provider, { value, children });
@@ -497,35 +512,40 @@ function Button({
   );
 }
 function LoginButton() {
-  const { isAuthenticated, setAccessToken, isInitialized } = useAuth();
+  const { isAuthenticated, isInitialized } = useAuth();
+  const navigate = useNavigate();
   const handleLogin = async () => {
     try {
-      const { data, error } = await supabase$1.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo: `${window.location.origin}`,
-          queryParams: {
-            access_type: "offline",
-            prompt: "consent"
-          }
-        }
-      });
-      if (error) {
-        console.error("Login error:", error);
-        throw error;
-      }
-      console.log("Redirecting to Google auth...", data);
+      const redirectUri = `${window.location.origin}/auth/callback`;
+      const googleAuthUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+      googleAuthUrl.searchParams.append("client_id", window.ENV.GOOGLE_CLIENT_ID);
+      googleAuthUrl.searchParams.append("redirect_uri", redirectUri);
+      googleAuthUrl.searchParams.append("response_type", "code");
+      googleAuthUrl.searchParams.append("scope", "email profile");
+      googleAuthUrl.searchParams.append("access_type", "offline");
+      googleAuthUrl.searchParams.append("prompt", "consent");
+      window.location.href = googleAuthUrl.toString();
     } catch (error) {
       console.error("Error logging in:", error);
+      navigate("/?error=" + encodeURIComponent("Failed to sign in. Please try again."));
     }
   };
   const handleLogout = async () => {
     try {
-      await supabase$1.auth.signOut();
-      setAccessToken(null);
-      localStorage.removeItem("supabase.auth.token");
+      const response = await fetch("/auth/signout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        credentials: "include"
+      });
+      if (!response.ok) {
+        throw new Error("Failed to sign out");
+      }
+      window.location.href = "/";
     } catch (error) {
       console.error("Error logging out:", error);
+      navigate("/?error=" + encodeURIComponent("Failed to sign out. Please try again."));
     }
   };
   if (!isInitialized) {
@@ -598,23 +618,123 @@ function Layout({ children }) {
     ] }) }) })
   ] });
 }
-function getEnvVar(key) {
-  const value = process.env[key];
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${key}`);
-  }
-  return value;
-}
-const ENV = {
-  SUPABASE_URL: getEnvVar("SUPABASE_URL"),
-  SUPABASE_ANON_KEY: getEnvVar("SUPABASE_ANON_KEY"),
-  SUPABASE_SERVICE_ROLE_KEY: getEnvVar("SUPABASE_SERVICE_ROLE_KEY")
-};
 function getPublicEnv() {
   return {
-    SUPABASE_URL: ENV.SUPABASE_URL,
-    SUPABASE_ANON_KEY: ENV.SUPABASE_ANON_KEY
+    MONGODB_URI: process.env.MONGODB_URI,
+    GOOGLE_CLIENT_ID: "232275253964-6t8o4dc1p4n6hp3ocev5llannel7qm5l.apps.googleusercontent.com"
   };
+}
+const ENV = {
+  MONGODB_URI: process.env.MONGODB_URI,
+  GOOGLE_CLIENT_ID: "232275253964-6t8o4dc1p4n6hp3ocev5llannel7qm5l.apps.googleusercontent.com",
+  GOOGLE_CLIENT_SECRET: "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",
+  JWT_SECRET: process.env.JWT_SECRET
+};
+const requiredServerEnvVars = [
+  "MONGODB_URI",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "JWT_SECRET"
+];
+for (const envVar of requiredServerEnvVars) {
+  if (!ENV[envVar]) {
+    throw new Error(`${envVar} is required`);
+  }
+}
+const requiredClientEnvVars = [
+  "MONGODB_URI",
+  "GOOGLE_CLIENT_ID"
+];
+function validatePublicEnv() {
+  const env = getPublicEnv();
+  for (const envVar of requiredClientEnvVars) {
+    if (!env[envVar]) {
+      throw new Error(`${envVar} is required`);
+    }
+  }
+}
+let db;
+async function connect() {
+  if (!process.env.MONGODB_URI) {
+    throw new Error("MONGODB_URI is required");
+  }
+  if (process.env.NODE_ENV === "production") {
+    db = await MongoClient.connect(process.env.MONGODB_URI);
+    return db;
+  }
+  if (!global.__db) {
+    global.__db = await MongoClient.connect(process.env.MONGODB_URI);
+  }
+  db = global.__db;
+  return db;
+}
+async function getDb() {
+  if (!db) {
+    await connect();
+  }
+  return db;
+}
+function mapUserDocument(doc) {
+  return {
+    id: doc._id.toString(),
+    email: doc.email,
+    name: doc.name,
+    picture: doc.picture,
+    createdAt: doc.createdAt
+  };
+}
+async function createUser(data) {
+  const db2 = await getDb();
+  const existingUser = await db2.db().collection("users").findOne({ email: data.email });
+  if (existingUser) {
+    return mapUserDocument(existingUser);
+  }
+  const newUser = {
+    ...data,
+    createdAt: /* @__PURE__ */ new Date()
+  };
+  const result = await db2.db().collection("users").insertOne(newUser);
+  return {
+    id: result.insertedId.toString(),
+    ...data,
+    createdAt: /* @__PURE__ */ new Date()
+  };
+}
+async function getUserById(id) {
+  const db2 = await getDb();
+  const user = await db2.db().collection("users").findOne({ _id: new ObjectId(id) });
+  if (!user) return null;
+  return mapUserDocument(user);
+}
+function generateToken(user) {
+  if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET is required");
+  }
+  return jwt.sign(
+    {
+      userId: user.id,
+      email: user.email
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+}
+async function verifyToken(token) {
+  if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET is required");
+  }
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await getUserById(decoded.userId);
+    return user;
+  } catch (error) {
+    return null;
+  }
+}
+async function authenticateWithGoogle(profile) {
+  const user = await createUser(profile);
+  const token = generateToken(user);
+  return { user, token };
 }
 const links = () => [
   {
@@ -623,17 +743,38 @@ const links = () => [
     type: "image/x-icon"
   }
 ];
-async function loader$6() {
+async function loader$5({ request }) {
+  validatePublicEnv();
   const env = getPublicEnv();
-  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
-    console.error("Missing required environment variables");
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split("; ").map((cookie) => {
+      const [name, value] = cookie.split("=");
+      return [name, decodeURIComponent(value)];
+    })
+  );
+  const token = cookies.auth_token;
+  let user = null;
+  let isAuthenticated = false;
+  if (token) {
+    try {
+      const verifiedUser = await verifyToken(token);
+      if (verifiedUser) {
+        user = serializeUser(verifiedUser);
+        isAuthenticated = true;
+      }
+    } catch (error) {
+      console.error("Error verifying token:", error);
+    }
   }
   return json({
-    ENV: env
+    ENV: env,
+    user,
+    isAuthenticated
   });
 }
 function App() {
-  const { ENV: ENV2 } = useLoaderData();
+  const { ENV: ENV2, user, isAuthenticated } = useLoaderData();
   const [searchParams] = useSearchParams();
   const error = searchParams.get("error");
   useEffect(() => {
@@ -659,7 +800,7 @@ function App() {
       /* @__PURE__ */ jsx(Links, {})
     ] }),
     /* @__PURE__ */ jsxs("body", { className: "h-full bg-white text-slate-900 antialiased", children: [
-      /* @__PURE__ */ jsx(AuthProvider, { children: /* @__PURE__ */ jsx(NotificationProvider, { children: /* @__PURE__ */ jsx(ApplicationProvider, { children: /* @__PURE__ */ jsxs(Layout, { children: [
+      /* @__PURE__ */ jsx(AuthProvider, { initialUser: user, initialAuthState: isAuthenticated, children: /* @__PURE__ */ jsx(NotificationProvider, { children: /* @__PURE__ */ jsx(ApplicationProvider, { children: /* @__PURE__ */ jsxs(Layout, { children: [
         error && /* @__PURE__ */ jsx("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-4", children: /* @__PURE__ */ jsx(Alert, { variant: "error", onClose: () => {
           const newUrl = new URL(window.location.href);
           newUrl.searchParams.delete("error");
@@ -676,8 +817,7 @@ function App() {
           }
         }
       ),
-      /* @__PURE__ */ jsx(Scripts, {}),
-      /* @__PURE__ */ jsx(LiveReload, {})
+      /* @__PURE__ */ jsx(Scripts, {})
     ] })
   ] });
 }
@@ -711,118 +851,108 @@ const route0 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
   ErrorBoundary,
   default: App,
   links,
-  loader: loader$6
+  loader: loader$5
 }, Symbol.toStringTag, { value: "Module" }));
-if (!ENV.SUPABASE_URL) {
-  throw new Error("SUPABASE_URL is required");
+function mapDocumentToResponse(doc) {
+  return {
+    id: doc._id.toString(),
+    userId: doc.userId.toString(),
+    name: doc.name,
+    type: doc.type,
+    content: doc.content,
+    uploadedAt: doc.uploadedAt
+  };
 }
-if (!ENV.SUPABASE_ANON_KEY) {
-  throw new Error("SUPABASE_ANON_KEY is required");
-}
-const supabase = createClient(
-  ENV.SUPABASE_URL,
-  ENV.SUPABASE_ANON_KEY,
-  {
-    auth: {
-      autoRefreshToken: true,
-      persistSession: true
-    }
-  }
-);
 async function getDocuments(userId) {
-  try {
-    const { data: documents, error } = await supabase.from("documents").select("*").eq("user_id", userId).order("uploaded_at", { ascending: false });
-    if (error) {
-      console.error("Error fetching documents:", error);
-      return [];
-    }
-    return documents;
-  } catch (error) {
-    console.error("Error in getDocuments:", error);
-    return [];
-  }
-}
-async function getDocumentById(id, userId) {
-  try {
-    const { data: document2, error } = await supabase.from("documents").select("*").eq("id", id).eq("user_id", userId).single();
-    if (error) {
-      console.error("Error fetching document:", error);
-      throw error;
-    }
-    return document2;
-  } catch (error) {
-    console.error("Error in getDocumentById:", error);
-    throw error;
-  }
-}
-async function createDocument({
-  name,
-  type,
-  content,
-  userId
-}) {
-  try {
-    const { data: document2, error } = await supabase.from("documents").insert([
-      {
-        name,
-        type,
-        content,
-        user_id: userId
-      }
-    ]).select().single();
-    if (error) {
-      console.error("Error creating document:", error);
-      throw error;
-    }
-    return document2;
-  } catch (error) {
-    console.error("Error in createDocument:", error);
-    throw error;
-  }
-}
-async function deleteDocument(id, userId) {
-  try {
-    const { error } = await supabase.from("documents").delete().eq("id", id).eq("user_id", userId);
-    if (error) {
-      console.error("Error deleting document:", error);
-      throw error;
-    }
-  } catch (error) {
-    console.error("Error in deleteDocument:", error);
-    throw error;
-  }
+  const db2 = await getDb();
+  const documents = await db2.db().collection("documents").find({ userId: new ObjectId(userId) }).sort({ uploadedAt: -1 }).toArray();
+  return documents.map(mapDocumentToResponse);
 }
 async function getDocumentsByType(type, userId) {
-  try {
-    const { data: documents, error } = await supabase.from("documents").select("*").eq("type", type).eq("user_id", userId).order("uploaded_at", { ascending: false });
-    if (error) {
-      console.error("Error fetching documents by type:", error);
-      return [];
-    }
-    return documents;
-  } catch (error) {
-    console.error("Error in getDocumentsByType:", error);
-    return [];
-  }
+  const db2 = await getDb();
+  const documents = await db2.db().collection("documents").find({
+    userId: new ObjectId(userId),
+    type
+  }).sort({ uploadedAt: -1 }).toArray();
+  return documents.map(mapDocumentToResponse);
 }
-async function action$2({ request }) {
+async function createDocument(data) {
+  const db2 = await getDb();
+  const doc = {
+    userId: new ObjectId(data.userId),
+    name: data.name,
+    type: data.type,
+    content: data.content,
+    uploadedAt: /* @__PURE__ */ new Date()
+  };
+  const result = await db2.db().collection("documents").insertOne(doc);
+  return {
+    id: result.insertedId.toString(),
+    userId: data.userId,
+    name: data.name,
+    type: data.type,
+    content: data.content,
+    uploadedAt: doc.uploadedAt
+  };
+}
+async function deleteDocument(id, userId) {
+  const db2 = await getDb();
+  const result = await db2.db().collection("documents").deleteOne({
+    _id: new ObjectId(id),
+    userId: new ObjectId(userId)
+  });
+  return result.deletedCount > 0;
+}
+async function getDocument(id, userId) {
+  const db2 = await getDb();
+  const document2 = await db2.db().collection("documents").findOne({
+    _id: new ObjectId(id),
+    userId: new ObjectId(userId)
+  });
+  if (!document2) return null;
+  return mapDocumentToResponse(document2);
+}
+async function action$4({ request }) {
   if (request.method !== "POST") {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split("; ").map((cookie) => {
+      const [name, value] = cookie.split("=");
+      return [name, decodeURIComponent(value)];
+    })
+  );
+  const token = cookies.auth_token;
+  if (!token) {
+    return json(
+      { error: "Not authenticated" },
+      { status: 401 }
+    );
+  }
   try {
+    const user = await verifyToken(token);
+    if (!user) {
+      return json(
+        { error: "Invalid authentication" },
+        { status: 401 }
+      );
+    }
     const formData = await request.formData();
     const file = formData.get("file");
     const type = formData.get("type");
     if (!file || !type) {
-      return json({ error: "Missing required fields" }, { status: 400 });
+      return json(
+        { error: "Missing required fields" },
+        { status: 400 }
+      );
     }
     const content = await file.text();
-    const mockUserId = "mock-user-id";
     const document2 = await createDocument({
       name: file.name,
       type,
       content,
-      userId: mockUserId
+      userId: user.id
     });
     return json({ document: document2 });
   } catch (error) {
@@ -835,54 +965,190 @@ async function action$2({ request }) {
 }
 const route1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
-  action: action$2
+  action: action$4
 }, Symbol.toStringTag, { value: "Module" }));
-async function action$1({ request }) {
+function analyzeResume(resumeContent, jobDescription) {
+  const jobKeywords = extractKeywords(jobDescription);
+  const resumeKeywords = extractKeywords(resumeContent);
+  const keywordsFound = jobKeywords.filter(
+    (keyword) => resumeKeywords.some((k) => k.toLowerCase() === keyword.toLowerCase())
+  );
+  const missingKeywords = jobKeywords.filter(
+    (keyword) => !resumeKeywords.some((k) => k.toLowerCase() === keyword.toLowerCase())
+  );
+  const keywordScore = keywordsFound.length / jobKeywords.length * 100;
+  const formattingScore = analyzeFormatting(resumeContent);
+  const skillsScore = analyzeSkills(resumeContent, jobDescription);
+  const experienceScore = analyzeExperience(resumeContent, jobDescription);
+  const overallScore = Math.round(
+    (keywordScore + formattingScore + skillsScore + experienceScore) / 4
+  );
+  return {
+    score: overallScore,
+    criteriaScores: {
+      keywordMatch: Math.round(keywordScore),
+      formatting: Math.round(formattingScore),
+      skillsAlignment: Math.round(skillsScore),
+      experienceRelevance: Math.round(experienceScore)
+    },
+    analysis: {
+      keywordsFound,
+      missingKeywords,
+      formattingIssues: analyzeFormattingIssues(resumeContent),
+      strengths: analyzeStrengths(resumeContent, jobDescription),
+      weaknesses: analyzeWeaknesses(resumeContent, jobDescription)
+    },
+    recommendations: generateRecommendations(resumeContent, jobDescription),
+    summary: generateSummary(resumeContent, jobDescription)
+  };
+}
+function extractKeywords(text) {
+  const commonWords = /* @__PURE__ */ new Set(["and", "or", "the", "in", "on", "at", "to", "for", "with", "by"]);
+  return text.toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter((word) => word.length > 2 && !commonWords.has(word)).map((word) => word.charAt(0).toUpperCase() + word.slice(1));
+}
+function analyzeFormatting(content) {
+  const hasProperSections = /education|experience|skills/i.test(content);
+  const hasProperSpacing = content.includes("\n\n");
+  const hasProperLength = content.length > 200 && content.length < 5e3;
+  let score = 0;
+  if (hasProperSections) score += 33;
+  if (hasProperSpacing) score += 33;
+  if (hasProperLength) score += 34;
+  return score;
+}
+function analyzeFormattingIssues(content) {
+  const issues = [];
+  if (!/education|experience|skills/i.test(content)) {
+    issues.push("Missing key sections (Education, Experience, or Skills)");
+  }
+  if (!content.includes("\n\n")) {
+    issues.push("Improve spacing between sections");
+  }
+  if (content.length < 200) {
+    issues.push("Resume is too short");
+  }
+  if (content.length > 5e3) {
+    issues.push("Resume is too long");
+  }
+  return issues;
+}
+function analyzeSkills(resume, jobDescription) {
+  const jobSkills = extractKeywords(jobDescription);
+  const resumeSkills = extractKeywords(resume);
+  const matchingSkills = jobSkills.filter(
+    (skill) => resumeSkills.some((s) => s.toLowerCase() === skill.toLowerCase())
+  );
+  return matchingSkills.length / jobSkills.length * 100;
+}
+function analyzeExperience(resume, jobDescription) {
+  const jobKeywords = extractKeywords(jobDescription);
+  const resumeContent = resume.toLowerCase();
+  const relevantExperience = jobKeywords.filter(
+    (keyword) => resumeContent.includes(keyword.toLowerCase())
+  );
+  return relevantExperience.length / jobKeywords.length * 100;
+}
+function analyzeStrengths(resume, jobDescription) {
+  const strengths = [];
+  const jobKeywords = extractKeywords(jobDescription);
+  const resumeKeywords = extractKeywords(resume);
+  const matchingKeywords = jobKeywords.filter(
+    (keyword) => resumeKeywords.some((k) => k.toLowerCase() === keyword.toLowerCase())
+  );
+  if (matchingKeywords.length > jobKeywords.length * 0.7) {
+    strengths.push("Strong keyword alignment with job requirements");
+  }
+  if (/\d+\s*years?\s*experience/i.test(resume)) {
+    strengths.push("Clearly stated years of experience");
+  }
+  if (/education|degree|certification/i.test(resume)) {
+    strengths.push("Relevant educational background");
+  }
+  return strengths;
+}
+function analyzeWeaknesses(resume, jobDescription) {
+  const weaknesses = [];
+  const jobKeywords = extractKeywords(jobDescription);
+  const resumeKeywords = extractKeywords(resume);
+  const missingKeywords = jobKeywords.filter(
+    (keyword) => !resumeKeywords.some((k) => k.toLowerCase() === keyword.toLowerCase())
+  );
+  if (missingKeywords.length > jobKeywords.length * 0.3) {
+    weaknesses.push("Missing several key job requirements");
+  }
+  if (resume.length < 300) {
+    weaknesses.push("Resume might be too brief");
+  }
+  if (!/achievements?|accomplishments?/i.test(resume)) {
+    weaknesses.push("Could highlight more specific achievements");
+  }
+  return weaknesses;
+}
+function generateRecommendations(resume, jobDescription) {
+  const recommendations = [];
+  const jobKeywords = extractKeywords(jobDescription);
+  const resumeKeywords = extractKeywords(resume);
+  const missingKeywords = jobKeywords.filter(
+    (keyword) => !resumeKeywords.some((k) => k.toLowerCase() === keyword.toLowerCase())
+  );
+  if (missingKeywords.length > 0) {
+    recommendations.push(`Add missing keywords: ${missingKeywords.join(", ")}`);
+  }
+  if (!/achievements?|accomplishments?/i.test(resume)) {
+    recommendations.push("Add specific achievements and measurable results");
+  }
+  if (!/education|degree|certification/i.test(resume)) {
+    recommendations.push("Include relevant education or certifications");
+  }
+  return recommendations;
+}
+function generateSummary(resume, jobDescription) {
+  const jobKeywords = extractKeywords(jobDescription);
+  const resumeKeywords = extractKeywords(resume);
+  const matchingKeywords = jobKeywords.filter(
+    (keyword) => resumeKeywords.some((k) => k.toLowerCase() === keyword.toLowerCase())
+  );
+  const matchPercentage = Math.round(matchingKeywords.length / jobKeywords.length * 100);
+  return `Your resume matches ${matchPercentage}% of the job requirements. ${matchPercentage >= 70 ? "You appear to be a strong candidate for this position." : "Consider updating your resume to better align with the job requirements."}`;
+}
+async function action$3({ request }) {
   if (request.method !== "POST") {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
+  const authHeader = request.headers.get("Authorization");
+  const token = authHeader == null ? void 0 : authHeader.replace("Bearer ", "");
+  if (!token) {
+    return json(
+      { error: "Not authenticated" },
+      { status: 401 }
+    );
+  }
   try {
+    const user = await verifyToken(token);
+    if (!user) {
+      return json(
+        { error: "Invalid authentication" },
+        { status: 401 }
+      );
+    }
     const { resumeId, jobDescriptionId } = await request.json();
     if (!resumeId || !jobDescriptionId) {
       return json(
-        { error: "Both resume and job description are required" },
+        { error: "Missing required fields" },
         { status: 400 }
       );
     }
-    const mockUserId = "mock-user-id";
     const [resume, jobDescription] = await Promise.all([
-      getDocumentById(resumeId, mockUserId),
-      getDocumentById(jobDescriptionId, mockUserId)
+      getDocument(resumeId, user.id),
+      getDocument(jobDescriptionId, user.id)
     ]);
-    const jobKeywords = jobDescription.content.toLowerCase().split(/\W+/).filter((word) => word.length > 3);
-    const resumeContent = resume.content.toLowerCase();
-    const keywordsFound = jobKeywords.filter((keyword) => resumeContent.includes(keyword));
-    const missingKeywords = jobKeywords.filter((keyword) => !resumeContent.includes(keyword));
-    const keywordMatchScore = Math.round(keywordsFound.length / jobKeywords.length * 100);
-    const formattingScore = 90;
-    const skillsAlignmentScore = Math.round(keywordsFound.length / jobKeywords.length * 100);
-    const experienceRelevanceScore = 85;
-    const analysis = {
-      score: Math.round((keywordMatchScore + formattingScore + skillsAlignmentScore + experienceRelevanceScore) / 4),
-      criteriaScores: {
-        keywordMatch: keywordMatchScore,
-        formatting: formattingScore,
-        skillsAlignment: skillsAlignmentScore,
-        experienceRelevance: experienceRelevanceScore
-      },
-      analysis: {
-        keywordsFound,
-        missingKeywords,
-        formattingIssues: [],
-        strengths: ["Strong technical skills", "Clear project descriptions"],
-        weaknesses: missingKeywords.length > 0 ? ["Missing some required keywords"] : []
-      },
-      recommendations: [
-        ...missingKeywords.map((keyword) => `Consider adding experience with ${keyword}`),
-        "Ensure your resume is properly formatted"
-      ],
-      summary: `Your resume matches ${keywordMatchScore}% of the job requirements. ${missingKeywords.length > 0 ? "Consider adding experience with the missing keywords to improve your match." : "Great job! Your resume matches all the key requirements."}`
-    };
+    if (!resume || !jobDescription) {
+      return json(
+        { error: "Documents not found" },
+        { status: 404 }
+      );
+    }
+    const analysis = analyzeResume(resume.content, jobDescription.content);
     return json({ analysis });
   } catch (error) {
     console.error("Error analyzing resume:", error);
@@ -894,28 +1160,52 @@ async function action$1({ request }) {
 }
 const route2 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
-  action: action$1
+  action: action$3
 }, Symbol.toStringTag, { value: "Module" }));
-async function loader$5({ params }) {
-  try {
-    const mockUserId = "mock-user-id";
-    const document2 = await getDocumentById(params.id, mockUserId);
-    return json({ document: document2 });
-  } catch (error) {
-    console.error("Error fetching document:", error);
-    return json(
-      { error: "Document not found" },
-      { status: 404 }
-    );
-  }
-}
-async function action({ request, params }) {
+async function action$2({ request, params }) {
   if (request.method !== "DELETE") {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
+  const { id } = params;
+  if (!id) {
+    return json({ error: "Document ID is required" }, { status: 400 });
+  }
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split("; ").map((cookie) => {
+      const [name, value] = cookie.split("=");
+      return [name, decodeURIComponent(value)];
+    })
+  );
+  const token = cookies.auth_token;
+  if (!token) {
+    return json(
+      { error: "Not authenticated" },
+      { status: 401 }
+    );
+  }
   try {
-    const mockUserId = "mock-user-id";
-    await deleteDocument(params.id, mockUserId);
+    const user = await verifyToken(token);
+    if (!user) {
+      return json(
+        { error: "Invalid authentication" },
+        { status: 401 }
+      );
+    }
+    const document2 = await getDocument(id, user.id);
+    if (!document2) {
+      return json(
+        { error: "Document not found" },
+        { status: 404 }
+      );
+    }
+    const success = await deleteDocument(id, user.id);
+    if (!success) {
+      return json(
+        { error: "Failed to delete document" },
+        { status: 500 }
+      );
+    }
     return json({ success: true });
   } catch (error) {
     console.error("Error deleting document:", error);
@@ -927,8 +1217,7 @@ async function action({ request, params }) {
 }
 const route3 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
-  action,
-  loader: loader$5
+  action: action$2
 }, Symbol.toStringTag, { value: "Module" }));
 const variantStyles$4 = {
   default: "bg-white",
@@ -1143,6 +1432,7 @@ function ResumeAnalysis({ resumes, jobDescriptions }) {
         headers: {
           "Content-Type": "application/json"
         },
+        credentials: "include",
         body: JSON.stringify({
           resumeId: selectedResume,
           jobDescriptionId: selectedJob
@@ -1239,16 +1529,50 @@ function ResumeAnalysis({ resumes, jobDescriptions }) {
     ] }) })
   ] });
 }
-async function loader$4() {
+function serializeDocument(doc) {
+  return {
+    ...doc,
+    uploadedAt: doc.uploadedAt.toISOString()
+  };
+}
+async function loader$4({ request }) {
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split("; ").map((cookie) => {
+      const [name, value] = cookie.split("=");
+      return [name, decodeURIComponent(value)];
+    })
+  );
+  const token = cookies.auth_token;
+  if (!token) {
+    return json(
+      {
+        resumes: [],
+        jobDescriptions: [],
+        error: "Please sign in to use this feature"
+      },
+      { status: 401 }
+    );
+  }
   try {
-    const mockUserId = "mock-user-id";
+    const user = await verifyToken(token);
+    if (!user) {
+      return json(
+        {
+          resumes: [],
+          jobDescriptions: [],
+          error: "Please sign in to use this feature"
+        },
+        { status: 401 }
+      );
+    }
     const [resumes, jobDescriptions] = await Promise.all([
-      getDocumentsByType("resume", mockUserId),
-      getDocumentsByType("job_description", mockUserId)
+      getDocumentsByType("resume", user.id),
+      getDocumentsByType("job_description", user.id)
     ]);
     return json({
-      resumes: resumes || [],
-      jobDescriptions: jobDescriptions || [],
+      resumes: resumes.map(serializeDocument),
+      jobDescriptions: jobDescriptions.map(serializeDocument),
       error: null
     });
   } catch (error) {
@@ -1299,57 +1623,62 @@ async function loader$3({ request }) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const error = url.searchParams.get("error");
-  const error_description = url.searchParams.get("error_description");
-  const next = url.searchParams.get("next") || "/";
   if (error) {
-    console.error("OAuth error:", error, error_description);
-    return redirect(`/?error=${encodeURIComponent(error_description || "Authentication failed")}`);
+    return redirect("/?error=" + encodeURIComponent(error));
   }
   if (!code) {
-    console.error("No code provided in callback");
-    return redirect("/?error=missing_code");
+    return redirect("/?error=" + encodeURIComponent("No authorization code provided"));
   }
   try {
-    const { data, error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
-    if (sessionError) {
-      console.error("Error exchanging code for session:", sessionError);
-      return redirect(`/?error=${encodeURIComponent(sessionError.message)}`);
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        code,
+        client_id: "232275253964-6t8o4dc1p4n6hp3ocev5llannel7qm5l.apps.googleusercontent.com",
+        client_secret: "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",
+        redirect_uri: `${url.origin}/auth/callback`,
+        grant_type: "authorization_code"
+      })
+    });
+    if (!response.ok) {
+      throw new Error("Failed to exchange code for token");
     }
-    if (!data.session) {
-      console.error("No session data received");
-      return redirect("/?error=no_session");
+    const { access_token } = await response.json();
+    const userInfoResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+      headers: {
+        Authorization: `Bearer ${access_token}`
+      }
+    });
+    if (!userInfoResponse.ok) {
+      throw new Error("Failed to get user info");
     }
+    const googleUser = await userInfoResponse.json();
+    const { user, token } = await authenticateWithGoogle({
+      email: googleUser.email,
+      name: googleUser.name,
+      picture: googleUser.picture
+    });
     const headers = new Headers();
     headers.append(
       "Set-Cookie",
-      `access_token=${data.session.access_token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 7}`
-      // 1 week
+      `auth_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 7}`
+      // 7 days
     );
-    if (data.session.refresh_token) {
-      headers.append(
-        "Set-Cookie",
-        `refresh_token=${data.session.refresh_token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}`
-        // 30 days
-      );
-    }
-    if (data.session.user) {
-      const { email, user_metadata } = data.session.user;
-      console.log("User authenticated:", email, user_metadata);
-    }
-    return redirect(next, {
+    return redirect("/", {
       headers
     });
   } catch (error2) {
-    console.error("Error in auth callback:", error2);
-    return redirect("/?error=auth_error");
+    console.error("Auth callback error:", error2);
+    return redirect(
+      "/?error=" + encodeURIComponent("Authentication failed. Please try again.")
+    );
   }
-}
-function AuthCallback() {
-  return null;
 }
 const route5 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
-  default: AuthCallback,
   loader: loader$3
 }, Symbol.toStringTag, { value: "Module" }));
 const variantStyles$2 = {
@@ -2010,6 +2339,68 @@ const route6 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
   __proto__: null,
   default: Applications
 }, Symbol.toStringTag, { value: "Module" }));
+async function action$1({ request }) {
+  if (request.method !== "POST") {
+    return json({ error: "Method not allowed" }, { status: 405 });
+  }
+  return json(
+    { success: true },
+    {
+      headers: {
+        "Set-Cookie": "auth_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;"
+      }
+    }
+  );
+}
+const route7 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  action: action$1
+}, Symbol.toStringTag, { value: "Module" }));
+async function action({ request }) {
+  if (request.method !== "POST") {
+    return json({ error: "Method not allowed" }, { status: 405 });
+  }
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split("; ").map((cookie) => {
+      const [name, value] = cookie.split("=");
+      return [name, decodeURIComponent(value)];
+    })
+  );
+  const token = cookies.auth_token;
+  if (!token) {
+    return json({ error: "No token provided" }, { status: 401 });
+  }
+  try {
+    const user = await verifyToken(token);
+    if (!user) {
+      return json({ error: "Invalid token" }, { status: 401 });
+    }
+    return json({
+      user: serializeUser(user),
+      isAuthenticated: true
+    }, {
+      headers: {
+        "Content-Type": "application/json"
+      }
+    });
+  } catch (error) {
+    console.error("Error verifying token:", error);
+    return json(
+      { error: "Failed to verify token" },
+      {
+        status: 500,
+        headers: {
+          "Content-Type": "application/json"
+        }
+      }
+    );
+  }
+}
+const route8 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  action
+}, Symbol.toStringTag, { value: "Module" }));
 function AudioRecorder() {
   const [isRecording, setIsRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState(null);
@@ -2141,22 +2532,47 @@ function VoiceNotes() {
     ] })
   ] });
 }
-const route7 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route9 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: VoiceNotes,
   loader: loader$2
 }, Symbol.toStringTag, { value: "Module" }));
-async function loader$1() {
+async function loader$1({ request }) {
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split("; ").map((cookie) => {
+      const [name, value] = cookie.split("=");
+      return [name, decodeURIComponent(value)];
+    })
+  );
+  const token = cookies.auth_token;
+  if (!token) {
+    return json(
+      { documents: [], error: "Please sign in to view documents" },
+      { status: 401 }
+    );
+  }
   try {
-    const mockUserId = "mock-user-id";
-    const documents = await getDocuments(mockUserId);
-    return json({ documents, error: null });
+    const user = await verifyToken(token);
+    if (!user) {
+      return json(
+        { documents: [], error: "Please sign in to view documents" },
+        { status: 401 }
+      );
+    }
+    const documents = await getDocuments(user.id);
+    return json(
+      {
+        documents: documents.map(serializeDocument),
+        error: null
+      }
+    );
   } catch (error) {
     console.error("Error fetching documents:", error);
-    return json({
-      documents: [],
-      error: "Failed to load documents"
-    });
+    return json(
+      { documents: [], error: "Failed to load documents" },
+      { status: 500 }
+    );
   }
 }
 function Documents() {
@@ -2166,6 +2582,7 @@ function Documents() {
   const [docType, setDocType] = useState("resume");
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [error, setError] = useState(null);
+  const [selectedFile, setSelectedFile] = useState(null);
   const fileInputRef = useRef(null);
   const revalidator = useRevalidator();
   if (loaderError) {
@@ -2174,19 +2591,29 @@ function Documents() {
       /* @__PURE__ */ jsx("p", { className: "text-gray-600", children: loaderError })
     ] }) });
   }
-  const handleFileUpload = async (event) => {
+  const handleFileChange = (event) => {
     var _a;
     const file = (_a = event.target.files) == null ? void 0 : _a[0];
-    if (!file) return;
+    if (file) {
+      setSelectedFile(file);
+      setError(null);
+    }
+  };
+  const handleUpload = async () => {
+    if (!selectedFile) {
+      setError("Please select a file");
+      return;
+    }
     setIsUploading(true);
     setError(null);
     const formData = new FormData();
-    formData.append("file", file);
+    formData.append("file", selectedFile);
     formData.append("type", docType);
     try {
-      const response = await fetch("/api/documents/upload", {
+      const response = await fetch("/api/documents.upload", {
         method: "POST",
-        body: formData
+        body: formData,
+        credentials: "include"
       });
       if (!response.ok) {
         const data = await response.json();
@@ -2195,6 +2622,7 @@ function Documents() {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+      setSelectedFile(null);
       setShowUploadModal(false);
       revalidator.revalidate();
     } catch (error2) {
@@ -2206,7 +2634,8 @@ function Documents() {
   const handleDelete = async (id) => {
     try {
       const response = await fetch(`/api/documents/${id}`, {
-        method: "DELETE"
+        method: "DELETE",
+        credentials: "include"
       });
       if (!response.ok) {
         const data = await response.json();
@@ -2267,7 +2696,13 @@ function Documents() {
       Modal,
       {
         isOpen: showUploadModal,
-        onClose: () => setShowUploadModal(false),
+        onClose: () => {
+          setShowUploadModal(false);
+          setSelectedFile(null);
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+        },
         title: "Upload Document",
         children: /* @__PURE__ */ jsxs("div", { className: "space-y-4", children: [
           /* @__PURE__ */ jsx(
@@ -2290,11 +2725,36 @@ function Documents() {
               ref: fileInputRef,
               type: "file",
               accept: ".pdf,.doc,.docx,.txt",
-              onChange: handleFileUpload,
+              onChange: handleFileChange,
               disabled: isUploading
             }
           ),
-          /* @__PURE__ */ jsx("p", { className: "text-sm text-gray-500", children: "Supported formats: PDF, DOC, DOCX, TXT" })
+          /* @__PURE__ */ jsx("p", { className: "text-sm text-gray-500", children: "Supported formats: PDF, DOC, DOCX, TXT" }),
+          /* @__PURE__ */ jsxs("div", { className: "flex justify-end gap-2", children: [
+            /* @__PURE__ */ jsx(
+              Button,
+              {
+                variant: "outline",
+                onClick: () => {
+                  setShowUploadModal(false);
+                  setSelectedFile(null);
+                  if (fileInputRef.current) {
+                    fileInputRef.current.value = "";
+                  }
+                },
+                disabled: isUploading,
+                children: "Cancel"
+              }
+            ),
+            /* @__PURE__ */ jsx(
+              Button,
+              {
+                onClick: handleUpload,
+                disabled: !selectedFile || isUploading,
+                children: isUploading ? "Uploading..." : "Upload"
+              }
+            )
+          ] })
         ] })
       }
     ),
@@ -2309,7 +2769,7 @@ function Documents() {
     )
   ] });
 }
-const route8 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route10 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Documents,
   loader: loader$1
@@ -2460,7 +2920,7 @@ function Index() {
     ] })
   ] });
 }
-const route9 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route11 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Index
 }, Symbol.toStringTag, { value: "Module" }));
@@ -2571,12 +3031,12 @@ function Chat() {
     /* @__PURE__ */ jsx(ChatInterface, {})
   ] });
 }
-const route10 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route12 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Chat,
   loader
 }, Symbol.toStringTag, { value: "Module" }));
-const serverManifest = { "entry": { "module": "/assets/entry.client-IqdsQovp.js", "imports": ["/assets/components-BgVkQzWd.js"], "css": [] }, "routes": { "root": { "id": "root", "parentId": void 0, "path": "", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": true, "module": "/assets/root-TgSlNRS_.js", "imports": ["/assets/components-BgVkQzWd.js", "/assets/ApplicationContext-Cn_llofd.js", "/assets/MicrophoneIcon-BtZZwHSh.js", "/assets/Button-DUVeCt1Z.js", "/assets/Alert-nOZsKWD7.js"], "css": ["/assets/root-BlxjrzjV.css"] }, "routes/api.documents.upload": { "id": "routes/api.documents.upload", "parentId": "root", "path": "api/documents/upload", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.documents.upload-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.analysis.resume": { "id": "routes/api.analysis.resume", "parentId": "root", "path": "api/analysis/resume", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.analysis.resume-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.documents.$id": { "id": "routes/api.documents.$id", "parentId": "root", "path": "api/documents/:id", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.documents._id-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/resume-analysis": { "id": "routes/resume-analysis", "parentId": "root", "path": "resume-analysis", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/resume-analysis-CX11BB-x.js", "imports": ["/assets/components-BgVkQzWd.js", "/assets/Card-FIoUA48z.js", "/assets/Button-DUVeCt1Z.js", "/assets/Select-BE_f6oK7.js"], "css": [] }, "routes/auth.callback": { "id": "routes/auth.callback", "parentId": "root", "path": "auth/callback", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.callback-DtCUJE-g.js", "imports": [], "css": [] }, "routes/applications": { "id": "routes/applications", "parentId": "root", "path": "applications", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/applications-brDoBmEC.js", "imports": ["/assets/components-BgVkQzWd.js", "/assets/ApplicationContext-Cn_llofd.js", "/assets/Button-DUVeCt1Z.js", "/assets/Card-FIoUA48z.js", "/assets/EmptyState-CjogxIWU.js", "/assets/Input-vO5gT9lF.js", "/assets/Select-BE_f6oK7.js", "/assets/Alert-nOZsKWD7.js"], "css": [] }, "routes/voice-notes": { "id": "routes/voice-notes", "parentId": "root", "path": "voice-notes", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/voice-notes-CRVVvxZ9.js", "imports": ["/assets/components-BgVkQzWd.js", "/assets/Button-DUVeCt1Z.js", "/assets/Card-FIoUA48z.js", "/assets/MicrophoneIcon-BtZZwHSh.js"], "css": [] }, "routes/documents": { "id": "routes/documents", "parentId": "root", "path": "documents", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/documents-Bj1QhSuz.js", "imports": ["/assets/components-BgVkQzWd.js", "/assets/Card-FIoUA48z.js", "/assets/Button-DUVeCt1Z.js", "/assets/Input-vO5gT9lF.js", "/assets/Select-BE_f6oK7.js", "/assets/EmptyState-CjogxIWU.js", "/assets/Alert-nOZsKWD7.js"], "css": [] }, "routes/_index": { "id": "routes/_index", "parentId": "root", "path": void 0, "index": true, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/_index-3bMS6t9V.js", "imports": ["/assets/components-BgVkQzWd.js", "/assets/Button-DUVeCt1Z.js"], "css": [] }, "routes/chat": { "id": "routes/chat", "parentId": "root", "path": "chat", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/chat-BA7t6mC3.js", "imports": ["/assets/components-BgVkQzWd.js", "/assets/Card-FIoUA48z.js", "/assets/Button-DUVeCt1Z.js", "/assets/Input-vO5gT9lF.js"], "css": [] } }, "url": "/assets/manifest-8e6c8cd5.js", "version": "8e6c8cd5" };
+const serverManifest = { "entry": { "module": "/assets/entry.client-B8Mv-gBF.js", "imports": ["/assets/components-9TVjVNdt.js"], "css": [] }, "routes": { "root": { "id": "root", "parentId": void 0, "path": "", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": true, "module": "/assets/root-ADsXehMI.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/ApplicationContext-DeSwkrAo.js", "/assets/MicrophoneIcon-At7u6jEd.js", "/assets/Button-CDHjtM4L.js", "/assets/Alert-BBZG7UN2.js"], "css": ["/assets/root-BlxjrzjV.css"] }, "routes/api.documents.upload": { "id": "routes/api.documents.upload", "parentId": "root", "path": "api/documents/upload", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.documents.upload-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.analysis.resume": { "id": "routes/api.analysis.resume", "parentId": "root", "path": "api/analysis/resume", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.analysis.resume-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.documents.$id": { "id": "routes/api.documents.$id", "parentId": "root", "path": "api/documents/:id", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.documents._id-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/resume-analysis": { "id": "routes/resume-analysis", "parentId": "root", "path": "resume-analysis", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/resume-analysis-CPkMFeqv.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Select-B3oI0161.js"], "css": [] }, "routes/auth.callback": { "id": "routes/auth.callback", "parentId": "root", "path": "auth/callback", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.callback-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/applications": { "id": "routes/applications", "parentId": "root", "path": "applications", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/applications-Bv_ghUno.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/ApplicationContext-DeSwkrAo.js", "/assets/Button-CDHjtM4L.js", "/assets/Card-Bc0Lcq-1.js", "/assets/EmptyState-kBjyyLjp.js", "/assets/Input-Dy9uozZT.js", "/assets/Select-B3oI0161.js", "/assets/Alert-BBZG7UN2.js"], "css": [] }, "routes/auth.signout": { "id": "routes/auth.signout", "parentId": "root", "path": "auth/signout", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.signout-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/auth.verify": { "id": "routes/auth.verify", "parentId": "root", "path": "auth/verify", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.verify-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/voice-notes": { "id": "routes/voice-notes", "parentId": "root", "path": "voice-notes", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/voice-notes-CtO0z7Bq.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Button-CDHjtM4L.js", "/assets/Card-Bc0Lcq-1.js", "/assets/MicrophoneIcon-At7u6jEd.js"], "css": [] }, "routes/documents": { "id": "routes/documents", "parentId": "root", "path": "documents", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/documents-DzxLEWK-.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Input-Dy9uozZT.js", "/assets/Select-B3oI0161.js", "/assets/EmptyState-kBjyyLjp.js", "/assets/Alert-BBZG7UN2.js"], "css": [] }, "routes/_index": { "id": "routes/_index", "parentId": "root", "path": void 0, "index": true, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/_index-D6D5gmSN.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Button-CDHjtM4L.js"], "css": [] }, "routes/chat": { "id": "routes/chat", "parentId": "root", "path": "chat", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/chat-VnNfx4tV.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Input-Dy9uozZT.js"], "css": [] } }, "url": "/assets/manifest-91fdf418.js", "version": "91fdf418" };
 const mode = "production";
 const assetsBuildDirectory = "build\\client";
 const basename = "/";
@@ -2641,13 +3101,29 @@ const routes = {
     caseSensitive: void 0,
     module: route6
   },
+  "routes/auth.signout": {
+    id: "routes/auth.signout",
+    parentId: "root",
+    path: "auth/signout",
+    index: void 0,
+    caseSensitive: void 0,
+    module: route7
+  },
+  "routes/auth.verify": {
+    id: "routes/auth.verify",
+    parentId: "root",
+    path: "auth/verify",
+    index: void 0,
+    caseSensitive: void 0,
+    module: route8
+  },
   "routes/voice-notes": {
     id: "routes/voice-notes",
     parentId: "root",
     path: "voice-notes",
     index: void 0,
     caseSensitive: void 0,
-    module: route7
+    module: route9
   },
   "routes/documents": {
     id: "routes/documents",
@@ -2655,7 +3131,7 @@ const routes = {
     path: "documents",
     index: void 0,
     caseSensitive: void 0,
-    module: route8
+    module: route10
   },
   "routes/_index": {
     id: "routes/_index",
@@ -2663,7 +3139,7 @@ const routes = {
     path: void 0,
     index: true,
     caseSensitive: void 0,
-    module: route9
+    module: route11
   },
   "routes/chat": {
     id: "routes/chat",
@@ -2671,7 +3147,7 @@ const routes = {
     path: "chat",
     index: void 0,
     caseSensitive: void 0,
-    module: route10
+    module: route12
   }
 };
 export {

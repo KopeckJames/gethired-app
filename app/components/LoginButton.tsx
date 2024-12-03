@@ -1,45 +1,54 @@
 import { useAuth } from "~/context/AuthContext";
 import Button from "./Button";
-import { supabase } from "~/utils/supabase.client";
+import { useNavigate } from "@remix-run/react";
 
 export default function LoginButton() {
-  const { isAuthenticated, setAccessToken, isInitialized } = useAuth();
+  const { isAuthenticated, isInitialized } = useAuth();
+  const navigate = useNavigate();
 
   const handleLogin = async () => {
     try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: `${window.location.origin}`,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
-        },
-      });
-
-      if (error) {
-        console.error('Login error:', error);
-        throw error;
-      }
+      // Redirect to Google OAuth
+      const redirectUri = `${window.location.origin}/auth/callback`;
+      const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
       
-      console.log('Redirecting to Google auth...', data);
+      googleAuthUrl.searchParams.append('client_id', window.ENV.GOOGLE_CLIENT_ID);
+      googleAuthUrl.searchParams.append('redirect_uri', redirectUri);
+      googleAuthUrl.searchParams.append('response_type', 'code');
+      googleAuthUrl.searchParams.append('scope', 'email profile');
+      googleAuthUrl.searchParams.append('access_type', 'offline');
+      googleAuthUrl.searchParams.append('prompt', 'consent');
+
+      window.location.href = googleAuthUrl.toString();
     } catch (error) {
       console.error('Error logging in:', error);
+      navigate('/?error=' + encodeURIComponent('Failed to sign in. Please try again.'));
     }
   };
 
   const handleLogout = async () => {
     try {
-      await supabase.auth.signOut();
-      setAccessToken(null);
-      localStorage.removeItem('supabase.auth.token');
+      const response = await fetch('/auth/signout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to sign out');
+      }
+
+      // Redirect to home page
+      window.location.href = '/';
     } catch (error) {
       console.error('Error logging out:', error);
+      navigate('/?error=' + encodeURIComponent('Failed to sign out. Please try again.'));
     }
   };
 
-  // Don't render until Supabase is initialized
+  // Don't render until auth is initialized
   if (!isInitialized) {
     return (
       <Button

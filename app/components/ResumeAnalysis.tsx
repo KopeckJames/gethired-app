@@ -2,11 +2,11 @@ import { useState } from "react";
 import Card from "./Card";
 import Button from "./Button";
 import Select from "./Select";
-import type { Document } from "~/types/document";
+import type { SerializedDocument } from "~/types/document";
 
 interface ResumeAnalysisProps {
-  resumes: Document[];
-  jobDescriptions: Document[];
+  resumes: SerializedDocument[];
+  jobDescriptions: SerializedDocument[];
 }
 
 interface AnalysisResult {
@@ -50,6 +50,7 @@ export default function ResumeAnalysis({ resumes, jobDescriptions }: ResumeAnaly
         headers: {
           "Content-Type": "application/json",
         },
+        credentials: 'include',
         body: JSON.stringify({
           resumeId: selectedResume,
           jobDescriptionId: selectedJob,
