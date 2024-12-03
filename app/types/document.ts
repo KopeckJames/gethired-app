@@ -7,6 +7,8 @@ export interface Document {
   content: string;
   uploadedAt: string;
   userId: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface DocumentAnalysis {

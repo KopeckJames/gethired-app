@@ -1,23 +1,10 @@
 import { json, type ActionFunctionArgs } from "@remix-run/node";
 import { createDocument } from "~/utils/db.server";
-import { getUserByAccessToken } from "~/utils/supabase.server";
 import type { DocumentType } from "~/types/document";
 
 export async function action({ request }: ActionFunctionArgs) {
   if (request.method !== "POST") {
     return json({ error: "Method not allowed" }, { status: 405 });
-  }
-
-  const authHeader = request.headers.get("Authorization");
-  if (!authHeader) {
-    return json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const accessToken = authHeader.replace("Bearer ", "");
-  const user = await getUserByAccessToken(accessToken);
-  
-  if (!user) {
-    return json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
@@ -32,11 +19,14 @@ export async function action({ request }: ActionFunctionArgs) {
     // Read file content
     const content = await file.text();
 
+    // Use mock user ID
+    const mockUserId = "mock-user-id";
+
     const document = await createDocument({
       name: file.name,
       type,
       content,
-      userId: user.id,
+      userId: mockUserId,
     });
 
     return json({ document });

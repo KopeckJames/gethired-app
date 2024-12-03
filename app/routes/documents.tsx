@@ -1,5 +1,5 @@
 import { json } from "@remix-run/node";
-import { useLoaderData } from "@remix-run/react";
+import { useLoaderData, useRevalidator } from "@remix-run/react";
 import Card from "~/components/Card";
 import Button from "~/components/Button";
 import Input from "~/components/Input";
@@ -39,6 +39,7 @@ export default function Documents() {
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const revalidator = useRevalidator();
 
   if (loaderError) {
     return (
@@ -69,14 +70,18 @@ export default function Documents() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to upload document");
+        const data = await response.json();
+        throw new Error(data.error || "Failed to upload document");
       }
 
-      // Reset form
+      // Reset form and close modal
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
       setShowUploadModal(false);
+      
+      // Refresh the documents list
+      revalidator.revalidate();
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to upload document");
     } finally {
@@ -91,8 +96,12 @@ export default function Documents() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to delete document");
+        const data = await response.json();
+        throw new Error(data.error || "Failed to delete document");
       }
+
+      // Refresh the documents list
+      revalidator.revalidate();
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to delete document");
     }
