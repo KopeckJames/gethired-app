@@ -6,11 +6,7 @@
 # Testing
 /coverage
 
-# Production
-/build
-/dist
-
-# Environment files
+# Local env files
 .env
 .env.local
 .env.development.local
@@ -40,16 +36,12 @@ Thumbs.db
 # TypeScript
 *.tsbuildinfo
 
-# Remix specific
-/.cache
-/public/build
-/api/index.js
-/api/index.js.map
-
-# Supabase
-.supabase/
-
-# Misc
+# Cache
 .cache/
 .temp/
 *.log
+
+# Keep build files for deployment
+!/build/
+!/public/build/
+!/api/
