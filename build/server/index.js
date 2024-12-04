@@ -876,25 +876,6 @@ async function getDocumentsByType(type, userId) {
   }).sort({ uploadedAt: -1 }).toArray();
   return documents.map(mapDocumentToResponse);
 }
-async function createDocument(data) {
-  const db2 = await getDb();
-  const doc = {
-    userId: new ObjectId(data.userId),
-    name: data.name,
-    type: data.type,
-    content: data.content,
-    uploadedAt: /* @__PURE__ */ new Date()
-  };
-  const result = await db2.db().collection("documents").insertOne(doc);
-  return {
-    id: result.insertedId.toString(),
-    userId: data.userId,
-    name: data.name,
-    type: data.type,
-    content: data.content,
-    uploadedAt: doc.uploadedAt
-  };
-}
 async function deleteDocument(id, userId) {
   const db2 = await getDb();
   const result = await db2.db().collection("documents").deleteOne({
@@ -912,61 +893,6 @@ async function getDocument(id, userId) {
   if (!document2) return null;
   return mapDocumentToResponse(document2);
 }
-async function action$4({ request }) {
-  if (request.method !== "POST") {
-    return json({ error: "Method not allowed" }, { status: 405 });
-  }
-  const cookieHeader = request.headers.get("Cookie") || "";
-  const cookies = Object.fromEntries(
-    cookieHeader.split("; ").map((cookie) => {
-      const [name, value] = cookie.split("=");
-      return [name, decodeURIComponent(value)];
-    })
-  );
-  const token = cookies.auth_token;
-  if (!token) {
-    return json(
-      { error: "Not authenticated" },
-      { status: 401 }
-    );
-  }
-  try {
-    const user = await verifyToken(token);
-    if (!user) {
-      return json(
-        { error: "Invalid authentication" },
-        { status: 401 }
-      );
-    }
-    const formData = await request.formData();
-    const file = formData.get("file");
-    const type = formData.get("type");
-    if (!file || !type) {
-      return json(
-        { error: "Missing required fields" },
-        { status: 400 }
-      );
-    }
-    const content = await file.text();
-    const document2 = await createDocument({
-      name: file.name,
-      type,
-      content,
-      userId: user.id
-    });
-    return json({ document: document2 });
-  } catch (error) {
-    console.error("Error uploading document:", error);
-    return json(
-      { error: "Failed to upload document" },
-      { status: 500 }
-    );
-  }
-}
-const route1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
-  __proto__: null,
-  action: action$4
-}, Symbol.toStringTag, { value: "Module" }));
 function analyzeResume(resumeContent, jobDescription) {
   const jobKeywords = extractKeywords(jobDescription);
   const resumeKeywords = extractKeywords(resumeContent);
@@ -1113,14 +1039,33 @@ function generateSummary(resume, jobDescription) {
 }
 async function action$3({ request }) {
   if (request.method !== "POST") {
-    return json({ error: "Method not allowed" }, { status: 405 });
+    return json(
+      { error: "Method not allowed" },
+      {
+        status: 405,
+        headers: {
+          "Content-Type": "application/json"
+        }
+      }
+    );
   }
-  const authHeader = request.headers.get("Authorization");
-  const token = authHeader == null ? void 0 : authHeader.replace("Bearer ", "");
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split("; ").map((cookie) => {
+      const [name, value] = cookie.split("=");
+      return [name, decodeURIComponent(value)];
+    })
+  );
+  const token = cookies.auth_token;
   if (!token) {
     return json(
       { error: "Not authenticated" },
-      { status: 401 }
+      {
+        status: 401,
+        headers: {
+          "Content-Type": "application/json"
+        }
+      }
     );
   }
   try {
@@ -1128,14 +1073,24 @@ async function action$3({ request }) {
     if (!user) {
       return json(
         { error: "Invalid authentication" },
-        { status: 401 }
+        {
+          status: 401,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
       );
     }
     const { resumeId, jobDescriptionId } = await request.json();
     if (!resumeId || !jobDescriptionId) {
       return json(
-        { error: "Missing required fields" },
-        { status: 400 }
+        { error: "Please select both a resume and job description" },
+        {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
       );
     }
     const [resume, jobDescription] = await Promise.all([
@@ -1145,20 +1100,37 @@ async function action$3({ request }) {
     if (!resume || !jobDescription) {
       return json(
         { error: "Documents not found" },
-        { status: 404 }
+        {
+          status: 404,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
       );
     }
     const analysis = analyzeResume(resume.content, jobDescription.content);
-    return json({ analysis });
+    return json(
+      { analysis },
+      {
+        headers: {
+          "Content-Type": "application/json"
+        }
+      }
+    );
   } catch (error) {
     console.error("Error analyzing resume:", error);
     return json(
       { error: "Failed to analyze resume" },
-      { status: 500 }
+      {
+        status: 500,
+        headers: {
+          "Content-Type": "application/json"
+        }
+      }
     );
   }
 }
-const route2 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   action: action$3
 }, Symbol.toStringTag, { value: "Module" }));
@@ -1215,7 +1187,7 @@ async function action$2({ request, params }) {
     );
   }
 }
-const route3 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route2 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   action: action$2
 }, Symbol.toStringTag, { value: "Module" }));
@@ -1427,7 +1399,7 @@ function ResumeAnalysis({ resumes, jobDescriptions }) {
     setIsAnalyzing(true);
     setError(null);
     try {
-      const response = await fetch("/api/analysis/resume", {
+      const response = await fetch("/api.analysis.resume", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -1438,10 +1410,10 @@ function ResumeAnalysis({ resumes, jobDescriptions }) {
           jobDescriptionId: selectedJob
         })
       });
-      if (!response.ok) {
-        throw new Error("Failed to analyze resume");
-      }
       const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to analyze resume");
+      }
       setAnalysis(data.analysis);
     } catch (error2) {
       setError(error2 instanceof Error ? error2.message : "Failed to analyze resume");
@@ -1459,10 +1431,13 @@ function ResumeAnalysis({ resumes, jobDescriptions }) {
             label: "Select Resume",
             value: selectedResume,
             onChange: (e) => setSelectedResume(e.target.value),
-            options: resumes.map((resume) => ({
-              value: resume.id,
-              label: resume.name
-            }))
+            options: [
+              { value: "", label: "Select a resume..." },
+              ...resumes.map((resume) => ({
+                value: resume.id,
+                label: resume.name
+              }))
+            ]
           }
         ),
         /* @__PURE__ */ jsx(
@@ -1471,10 +1446,13 @@ function ResumeAnalysis({ resumes, jobDescriptions }) {
             label: "Select Job Description",
             value: selectedJob,
             onChange: (e) => setSelectedJob(e.target.value),
-            options: jobDescriptions.map((job) => ({
-              value: job.id,
-              label: job.name
-            }))
+            options: [
+              { value: "", label: "Select a job description..." },
+              ...jobDescriptions.map((job) => ({
+                value: job.id,
+                label: job.name
+              }))
+            ]
           }
         )
       ] }),
@@ -1614,7 +1592,7 @@ function ResumeAnalysisPage() {
     )
   ] });
 }
-const route4 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route3 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: ResumeAnalysisPage,
   loader: loader$4
@@ -1677,7 +1655,7 @@ async function loader$3({ request }) {
     );
   }
 }
-const route5 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route4 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   loader: loader$3
 }, Symbol.toStringTag, { value: "Module" }));
@@ -2335,7 +2313,7 @@ function Applications() {
     )
   ] });
 }
-const route6 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route5 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Applications
 }, Symbol.toStringTag, { value: "Module" }));
@@ -2352,7 +2330,7 @@ async function action$1({ request }) {
     }
   );
 }
-const route7 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route6 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   action: action$1
 }, Symbol.toStringTag, { value: "Module" }));
@@ -2397,7 +2375,7 @@ async function action({ request }) {
     );
   }
 }
-const route8 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route7 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   action
 }, Symbol.toStringTag, { value: "Module" }));
@@ -2532,7 +2510,7 @@ function VoiceNotes() {
     ] })
   ] });
 }
-const route9 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route8 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: VoiceNotes,
   loader: loader$2
@@ -2610,7 +2588,7 @@ function Documents() {
     formData.append("file", selectedFile);
     formData.append("type", docType);
     try {
-      const response = await fetch("/api/documents.upload", {
+      const response = await fetch("/api/documents/upload", {
         method: "POST",
         body: formData,
         credentials: "include"
@@ -2769,7 +2747,7 @@ function Documents() {
     )
   ] });
 }
-const route10 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route9 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Documents,
   loader: loader$1
@@ -2920,7 +2898,7 @@ function Index() {
     ] })
   ] });
 }
-const route11 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route10 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Index
 }, Symbol.toStringTag, { value: "Module" }));
@@ -3031,12 +3009,12 @@ function Chat() {
     /* @__PURE__ */ jsx(ChatInterface, {})
   ] });
 }
-const route12 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route11 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Chat,
   loader
 }, Symbol.toStringTag, { value: "Module" }));
-const serverManifest = { "entry": { "module": "/assets/entry.client-B8Mv-gBF.js", "imports": ["/assets/components-9TVjVNdt.js"], "css": [] }, "routes": { "root": { "id": "root", "parentId": void 0, "path": "", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": true, "module": "/assets/root-ADsXehMI.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/ApplicationContext-DeSwkrAo.js", "/assets/MicrophoneIcon-At7u6jEd.js", "/assets/Button-CDHjtM4L.js", "/assets/Alert-BBZG7UN2.js"], "css": ["/assets/root-BlxjrzjV.css"] }, "routes/api.documents.upload": { "id": "routes/api.documents.upload", "parentId": "root", "path": "api/documents/upload", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.documents.upload-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.analysis.resume": { "id": "routes/api.analysis.resume", "parentId": "root", "path": "api/analysis/resume", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.analysis.resume-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.documents.$id": { "id": "routes/api.documents.$id", "parentId": "root", "path": "api/documents/:id", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.documents._id-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/resume-analysis": { "id": "routes/resume-analysis", "parentId": "root", "path": "resume-analysis", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/resume-analysis-CPkMFeqv.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Select-B3oI0161.js"], "css": [] }, "routes/auth.callback": { "id": "routes/auth.callback", "parentId": "root", "path": "auth/callback", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.callback-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/applications": { "id": "routes/applications", "parentId": "root", "path": "applications", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/applications-Bv_ghUno.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/ApplicationContext-DeSwkrAo.js", "/assets/Button-CDHjtM4L.js", "/assets/Card-Bc0Lcq-1.js", "/assets/EmptyState-kBjyyLjp.js", "/assets/Input-Dy9uozZT.js", "/assets/Select-B3oI0161.js", "/assets/Alert-BBZG7UN2.js"], "css": [] }, "routes/auth.signout": { "id": "routes/auth.signout", "parentId": "root", "path": "auth/signout", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.signout-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/auth.verify": { "id": "routes/auth.verify", "parentId": "root", "path": "auth/verify", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.verify-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/voice-notes": { "id": "routes/voice-notes", "parentId": "root", "path": "voice-notes", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/voice-notes-CtO0z7Bq.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Button-CDHjtM4L.js", "/assets/Card-Bc0Lcq-1.js", "/assets/MicrophoneIcon-At7u6jEd.js"], "css": [] }, "routes/documents": { "id": "routes/documents", "parentId": "root", "path": "documents", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/documents-DzxLEWK-.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Input-Dy9uozZT.js", "/assets/Select-B3oI0161.js", "/assets/EmptyState-kBjyyLjp.js", "/assets/Alert-BBZG7UN2.js"], "css": [] }, "routes/_index": { "id": "routes/_index", "parentId": "root", "path": void 0, "index": true, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/_index-D6D5gmSN.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Button-CDHjtM4L.js"], "css": [] }, "routes/chat": { "id": "routes/chat", "parentId": "root", "path": "chat", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/chat-VnNfx4tV.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Input-Dy9uozZT.js"], "css": [] } }, "url": "/assets/manifest-91fdf418.js", "version": "91fdf418" };
+const serverManifest = { "entry": { "module": "/assets/entry.client-B8Mv-gBF.js", "imports": ["/assets/components-9TVjVNdt.js"], "css": [] }, "routes": { "root": { "id": "root", "parentId": void 0, "path": "", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": true, "module": "/assets/root-ADsXehMI.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/ApplicationContext-DeSwkrAo.js", "/assets/MicrophoneIcon-At7u6jEd.js", "/assets/Button-CDHjtM4L.js", "/assets/Alert-BBZG7UN2.js"], "css": ["/assets/root-BlxjrzjV.css"] }, "routes/api.analysis.resume": { "id": "routes/api.analysis.resume", "parentId": "root", "path": "api/analysis/resume", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.analysis.resume-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.documents.$id": { "id": "routes/api.documents.$id", "parentId": "root", "path": "api/documents/:id", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.documents._id-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/resume-analysis": { "id": "routes/resume-analysis", "parentId": "root", "path": "resume-analysis", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/resume-analysis-BBeErEIb.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Select-B3oI0161.js"], "css": [] }, "routes/auth.callback": { "id": "routes/auth.callback", "parentId": "root", "path": "auth/callback", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.callback-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/applications": { "id": "routes/applications", "parentId": "root", "path": "applications", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/applications-Bv_ghUno.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/ApplicationContext-DeSwkrAo.js", "/assets/Button-CDHjtM4L.js", "/assets/Card-Bc0Lcq-1.js", "/assets/EmptyState-kBjyyLjp.js", "/assets/Input-Dy9uozZT.js", "/assets/Select-B3oI0161.js", "/assets/Alert-BBZG7UN2.js"], "css": [] }, "routes/auth.signout": { "id": "routes/auth.signout", "parentId": "root", "path": "auth/signout", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.signout-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/auth.verify": { "id": "routes/auth.verify", "parentId": "root", "path": "auth/verify", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.verify-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/voice-notes": { "id": "routes/voice-notes", "parentId": "root", "path": "voice-notes", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/voice-notes-CtO0z7Bq.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Button-CDHjtM4L.js", "/assets/Card-Bc0Lcq-1.js", "/assets/MicrophoneIcon-At7u6jEd.js"], "css": [] }, "routes/documents": { "id": "routes/documents", "parentId": "root", "path": "documents", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/documents-Bsehxu76.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Input-Dy9uozZT.js", "/assets/Select-B3oI0161.js", "/assets/EmptyState-kBjyyLjp.js", "/assets/Alert-BBZG7UN2.js"], "css": [] }, "routes/_index": { "id": "routes/_index", "parentId": "root", "path": void 0, "index": true, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/_index-D6D5gmSN.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Button-CDHjtM4L.js"], "css": [] }, "routes/chat": { "id": "routes/chat", "parentId": "root", "path": "chat", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/chat-VnNfx4tV.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Input-Dy9uozZT.js"], "css": [] } }, "url": "/assets/manifest-b31dff3b.js", "version": "b31dff3b" };
 const mode = "production";
 const assetsBuildDirectory = "build\\client";
 const basename = "/";
@@ -3053,21 +3031,13 @@ const routes = {
     caseSensitive: void 0,
     module: route0
   },
-  "routes/api.documents.upload": {
-    id: "routes/api.documents.upload",
-    parentId: "root",
-    path: "api/documents/upload",
-    index: void 0,
-    caseSensitive: void 0,
-    module: route1
-  },
   "routes/api.analysis.resume": {
     id: "routes/api.analysis.resume",
     parentId: "root",
     path: "api/analysis/resume",
     index: void 0,
     caseSensitive: void 0,
-    module: route2
+    module: route1
   },
   "routes/api.documents.$id": {
     id: "routes/api.documents.$id",
@@ -3075,7 +3045,7 @@ const routes = {
     path: "api/documents/:id",
     index: void 0,
     caseSensitive: void 0,
-    module: route3
+    module: route2
   },
   "routes/resume-analysis": {
     id: "routes/resume-analysis",
@@ -3083,7 +3053,7 @@ const routes = {
     path: "resume-analysis",
     index: void 0,
     caseSensitive: void 0,
-    module: route4
+    module: route3
   },
   "routes/auth.callback": {
     id: "routes/auth.callback",
@@ -3091,7 +3061,7 @@ const routes = {
     path: "auth/callback",
     index: void 0,
     caseSensitive: void 0,
-    module: route5
+    module: route4
   },
   "routes/applications": {
     id: "routes/applications",
@@ -3099,7 +3069,7 @@ const routes = {
     path: "applications",
     index: void 0,
     caseSensitive: void 0,
-    module: route6
+    module: route5
   },
   "routes/auth.signout": {
     id: "routes/auth.signout",
@@ -3107,7 +3077,7 @@ const routes = {
     path: "auth/signout",
     index: void 0,
     caseSensitive: void 0,
-    module: route7
+    module: route6
   },
   "routes/auth.verify": {
     id: "routes/auth.verify",
@@ -3115,7 +3085,7 @@ const routes = {
     path: "auth/verify",
     index: void 0,
     caseSensitive: void 0,
-    module: route8
+    module: route7
   },
   "routes/voice-notes": {
     id: "routes/voice-notes",
@@ -3123,7 +3093,7 @@ const routes = {
     path: "voice-notes",
     index: void 0,
     caseSensitive: void 0,
-    module: route9
+    module: route8
   },
   "routes/documents": {
     id: "routes/documents",
@@ -3131,7 +3101,7 @@ const routes = {
     path: "documents",
     index: void 0,
     caseSensitive: void 0,
-    module: route10
+    module: route9
   },
   "routes/_index": {
     id: "routes/_index",
@@ -3139,7 +3109,7 @@ const routes = {
     path: void 0,
     index: true,
     caseSensitive: void 0,
-    module: route11
+    module: route10
   },
   "routes/chat": {
     id: "routes/chat",
@@ -3147,7 +3117,7 @@ const routes = {
     path: "chat",
     index: void 0,
     caseSensitive: void 0,
-    module: route12
+    module: route11
   }
 };
 export {
