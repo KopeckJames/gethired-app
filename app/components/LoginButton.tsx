@@ -8,8 +8,8 @@ export default function LoginButton() {
 
   const handleLogin = async () => {
     try {
-      // Redirect to Google OAuth
-      const redirectUri = `${window.location.origin}/auth/callback`;
+      // Use window.location.origin for local development fallback
+      const redirectUri = `${window.ENV.APP_URL || window.location.origin}/auth/callback`;
       const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
       
       googleAuthUrl.searchParams.append('client_id', window.ENV.GOOGLE_CLIENT_ID);

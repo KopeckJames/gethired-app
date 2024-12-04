@@ -1,6 +1,7 @@
 export interface ClientEnv {
   MONGODB_URI: string;
   GOOGLE_CLIENT_ID: string;
+  APP_URL: string;
 }
 
 declare global {
@@ -13,6 +14,7 @@ export function getPublicEnv(): ClientEnv {
   return {
     MONGODB_URI: process.env.MONGODB_URI!,
     GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID!,
+    APP_URL: process.env.APP_URL!,
   };
 }
 
@@ -22,6 +24,7 @@ export const ENV = {
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID!,
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET!,
   JWT_SECRET: process.env.JWT_SECRET!,
+  APP_URL: process.env.APP_URL!,
 };
 
 // Validate required environment variables
@@ -30,6 +33,7 @@ const requiredServerEnvVars = [
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
   'JWT_SECRET',
+  'APP_URL',
 ] as const;
 
 for (const envVar of requiredServerEnvVars) {
@@ -42,6 +46,7 @@ for (const envVar of requiredServerEnvVars) {
 const requiredClientEnvVars = [
   'MONGODB_URI',
   'GOOGLE_CLIENT_ID',
+  'APP_URL',
 ] as const;
 
 export function validatePublicEnv() {

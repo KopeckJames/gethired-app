@@ -25,7 +25,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         code,
         client_id: process.env.GOOGLE_CLIENT_ID,
         client_secret: process.env.GOOGLE_CLIENT_SECRET,
-        redirect_uri: `${url.origin}/auth/callback`,
+        redirect_uri: `${process.env.APP_URL}/auth/callback`,
         grant_type: 'authorization_code',
       }),
     });
