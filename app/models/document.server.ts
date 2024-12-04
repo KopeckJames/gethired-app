@@ -74,6 +74,38 @@ export async function createDocument(data: DocumentCreate): Promise<Document> {
   };
 }
 
+export async function updateDocument(id: string, userId: string, content: string): Promise<Document | null> {
+  const db = await getDb();
+  const collection = db.db().collection<DocumentModel>('documents');
+  
+  // Update the document
+  const updateResult = await collection.updateOne(
+    {
+      _id: new ObjectId(id),
+      userId: new ObjectId(userId),
+    },
+    {
+      $set: { content },
+    }
+  );
+
+  if (updateResult.matchedCount === 0) {
+    return null;
+  }
+
+  // Fetch the updated document
+  const updatedDoc = await collection.findOne({
+    _id: new ObjectId(id),
+    userId: new ObjectId(userId),
+  });
+
+  if (!updatedDoc) {
+    return null;
+  }
+
+  return mapDocumentToResponse(updatedDoc);
+}
+
 export async function deleteDocument(id: string, userId: string): Promise<boolean> {
   const db = await getDb();
   const result = await db

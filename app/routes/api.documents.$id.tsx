@@ -1,12 +1,8 @@
 import { json, type ActionFunctionArgs } from "@remix-run/node";
-import { deleteDocument, getDocument } from "~/models/document.server";
+import { deleteDocument, getDocument, updateDocument } from "~/models/document.server";
 import { verifyToken } from "~/models/user.server";
 
 export async function action({ request, params }: ActionFunctionArgs) {
-  if (request.method !== "DELETE") {
-    return json({ error: "Method not allowed" }, { status: 405 });
-  }
-
   const { id } = params;
   if (!id) {
     return json({ error: "Document ID is required" }, { status: 400 });
@@ -48,19 +44,41 @@ export async function action({ request, params }: ActionFunctionArgs) {
       );
     }
 
-    const success = await deleteDocument(id, user.id);
-    if (!success) {
-      return json(
-        { error: "Failed to delete document" },
-        { status: 500 }
-      );
+    if (request.method === "DELETE") {
+      const success = await deleteDocument(id, user.id);
+      if (!success) {
+        return json(
+          { error: "Failed to delete document" },
+          { status: 500 }
+        );
+      }
+      return json({ success: true });
     }
 
-    return json({ success: true });
+    if (request.method === "PUT") {
+      const { content } = await request.json();
+      if (!content) {
+        return json(
+          { error: "Content is required" },
+          { status: 400 }
+        );
+      }
+
+      const updatedDoc = await updateDocument(id, user.id, content);
+      if (!updatedDoc) {
+        return json(
+          { error: "Failed to update document" },
+          { status: 500 }
+        );
+      }
+      return json({ success: true, document: updatedDoc });
+    }
+
+    return json({ error: "Method not allowed" }, { status: 405 });
   } catch (error) {
-    console.error("Error deleting document:", error);
+    console.error("Error handling document:", error);
     return json(
-      { error: "Failed to delete document" },
+      { error: "Failed to process document" },
       { status: 500 }
     );
   }
