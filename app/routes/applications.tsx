@@ -71,7 +71,7 @@ export default function Applications() {
       <div className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Applications</h1>
-          <p className="text-sm text-slate-600">
+          <p className="text-sm text-slate-600 dark:text-slate-400">
             Track and manage your job applications
           </p>
         </div>
@@ -115,7 +115,7 @@ export default function Applications() {
                 <div className="flex items-start justify-between">
                   <div>
                     <h3 className="font-semibold">{application.company}</h3>
-                    <p className="text-sm text-slate-600">
+                    <p className="text-sm text-slate-600 dark:text-slate-400">
                       {application.position}
                     </p>
                   </div>
@@ -123,7 +123,7 @@ export default function Applications() {
                     {application.status}
                   </Badge>
                 </div>
-                <div className="text-sm text-slate-600">
+                <div className="text-sm text-slate-600 dark:text-slate-400">
                   <p>Applied: {formatDate(application.dateApplied)}</p>
                   {application.location && <p>Location: {application.location}</p>}
                   {application.salary && <p>Salary: {application.salary}</p>}
@@ -136,7 +136,7 @@ export default function Applications() {
                     href={application.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-sm text-blue-600 hover:text-blue-700"
+                    className="text-sm text-blue-600 hover:text-blue-700 dark:text-blue-500 dark:hover:text-blue-400"
                   >
                     View Job Posting →
                   </a>

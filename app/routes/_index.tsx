@@ -155,7 +155,7 @@ export default function Index() {
           <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
             Ready to streamline your job search?
           </h2>
-          <p className="mx-auto mt-6 max-w-xl text-lg leading-8 text-slate-600">
+          <p className="mx-auto mt-6 max-w-xl text-lg leading-8 text-slate-600 dark:text-slate-400">
             Join thousands of job seekers who have already improved their job search
             process with GetHired!
           </p>
