@@ -45,7 +45,7 @@ export default function ResumeAnalysis({ resumes, jobDescriptions }: ResumeAnaly
     setError(null);
 
     try {
-      const response = await fetch("/api/analysis/resume", {
+      const response = await fetch("/api.analysis.resume", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -57,11 +57,12 @@ export default function ResumeAnalysis({ resumes, jobDescriptions }: ResumeAnaly
         }),
       });
 
+      const data = await response.json();
+
       if (!response.ok) {
-        throw new Error("Failed to analyze resume");
+        throw new Error(data.error || "Failed to analyze resume");
       }
 
-      const data = await response.json();
       setAnalysis(data.analysis);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to analyze resume");
@@ -79,19 +80,25 @@ export default function ResumeAnalysis({ resumes, jobDescriptions }: ResumeAnaly
             label="Select Resume"
             value={selectedResume}
             onChange={(e) => setSelectedResume(e.target.value)}
-            options={resumes.map((resume) => ({
-              value: resume.id,
-              label: resume.name,
-            }))}
+            options={[
+              { value: "", label: "Select a resume..." },
+              ...resumes.map((resume) => ({
+                value: resume.id,
+                label: resume.name,
+              })),
+            ]}
           />
           <Select
             label="Select Job Description"
             value={selectedJob}
             onChange={(e) => setSelectedJob(e.target.value)}
-            options={jobDescriptions.map((job) => ({
-              value: job.id,
-              label: job.name,
-            }))}
+            options={[
+              { value: "", label: "Select a job description..." },
+              ...jobDescriptions.map((job) => ({
+                value: job.id,
+                label: job.name,
+              })),
+            ]}
           />
         </div>
         {error && (

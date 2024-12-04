@@ -222,17 +222,37 @@ function generateSummary(resume: string, jobDescription: string): string {
 
 export async function action({ request }: ActionFunctionArgs) {
   if (request.method !== "POST") {
-    return json({ error: "Method not allowed" }, { status: 405 });
+    return json(
+      { error: "Method not allowed" },
+      { 
+        status: 405,
+        headers: {
+          "Content-Type": "application/json",
+        }
+      }
+    );
   }
 
-  // Verify authentication
-  const authHeader = request.headers.get('Authorization');
-  const token = authHeader?.replace('Bearer ', '');
+  // Get token from cookie
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split('; ').map(cookie => {
+      const [name, value] = cookie.split('=');
+      return [name, decodeURIComponent(value)];
+    })
+  );
+  
+  const token = cookies.auth_token;
 
   if (!token) {
     return json(
       { error: "Not authenticated" },
-      { status: 401 }
+      { 
+        status: 401,
+        headers: {
+          "Content-Type": "application/json",
+        }
+      }
     );
   }
 
@@ -241,7 +261,12 @@ export async function action({ request }: ActionFunctionArgs) {
     if (!user) {
       return json(
         { error: "Invalid authentication" },
-        { status: 401 }
+        { 
+          status: 401,
+          headers: {
+            "Content-Type": "application/json",
+          }
+        }
       );
     }
 
@@ -249,8 +274,13 @@ export async function action({ request }: ActionFunctionArgs) {
 
     if (!resumeId || !jobDescriptionId) {
       return json(
-        { error: "Missing required fields" },
-        { status: 400 }
+        { error: "Please select both a resume and job description" },
+        { 
+          status: 400,
+          headers: {
+            "Content-Type": "application/json",
+          }
+        }
       );
     }
 
@@ -263,19 +293,36 @@ export async function action({ request }: ActionFunctionArgs) {
     if (!resume || !jobDescription) {
       return json(
         { error: "Documents not found" },
-        { status: 404 }
+        { 
+          status: 404,
+          headers: {
+            "Content-Type": "application/json",
+          }
+        }
       );
     }
 
     // Analyze resume
     const analysis = analyzeResume(resume.content, jobDescription.content);
 
-    return json({ analysis });
+    return json(
+      { analysis },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        }
+      }
+    );
   } catch (error) {
     console.error("Error analyzing resume:", error);
     return json(
       { error: "Failed to analyze resume" },
-      { status: 500 }
+      { 
+        status: 500,
+        headers: {
+          "Content-Type": "application/json",
+        }
+      }
     );
   }
 }
