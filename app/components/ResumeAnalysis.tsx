@@ -45,7 +45,7 @@ export default function ResumeAnalysis({ resumes, jobDescriptions }: ResumeAnaly
     setError(null);
 
     try {
-      const response = await fetch("/api.analysis.resume", {
+      const response = await fetch("/api/resume-analysis", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
