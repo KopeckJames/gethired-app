@@ -8,8 +8,10 @@ export default function LoginButton() {
 
   const handleLogin = async () => {
     try {
-      // Use window.location.origin for local development fallback
-      const redirectUri = `${window.ENV.APP_URL || window.location.origin}/auth/callback`;
+      // Use window.ENV.APP_URL, falling back to window.location.origin
+      const baseUrl = window.ENV.APP_URL || window.location.origin;
+      const redirectUri = `${baseUrl}/auth/callback`;
+      
       const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
       
       googleAuthUrl.searchParams.append('client_id', window.ENV.GOOGLE_CLIENT_ID);

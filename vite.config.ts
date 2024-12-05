@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => {
       tsconfigPaths(),
     ],
     server: {
-      port: 5173,
+      port: 5175,
       host: 'localhost',
     },
     define: {

@@ -3,7 +3,7 @@ import { useNavigate } from "@remix-run/react";
 import { useEffect } from "react";
 
 export function useAuthenticatedFetch() {
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -14,16 +14,7 @@ export function useAuthenticatedFetch() {
 
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     try {
-      // Verify authentication status
-      const verifyResponse = await fetch('/auth/verify', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-      });
-
-      if (!verifyResponse.ok) {
+      if (!isAuthenticated) {
         navigate('/?error=Please%20log%20in%20to%20continue');
         throw new Error("Not authenticated");
       }
@@ -31,6 +22,10 @@ export function useAuthenticatedFetch() {
       const response = await fetch(input, {
         ...init,
         credentials: 'include',
+        headers: {
+          ...init?.headers,
+          'Accept': 'application/json',
+        },
       });
 
       if (response.status === 401) {
@@ -50,31 +45,14 @@ export function useAuthenticatedFetch() {
 }
 
 export function useRequireAuth() {
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
-    const verifyAuth = async () => {
-      try {
-        const response = await fetch('/auth/verify', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include',
-        });
-
-        if (!response.ok) {
-          navigate('/?error=Please%20log%20in%20to%20continue');
-        }
-      } catch (error) {
-        console.error('Auth verification failed:', error);
-        navigate('/?error=Authentication%20failed.%20Please%20try%20again.');
-      }
-    };
-
-    verifyAuth();
-  }, [navigate]);
+    if (!isAuthenticated) {
+      navigate('/?error=Please%20log%20in%20to%20continue');
+    }
+  }, [isAuthenticated, navigate]);
 
   return { isAuthenticated: !!user };
 }

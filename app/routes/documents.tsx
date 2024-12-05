@@ -13,6 +13,7 @@ import { getDocuments } from "~/models/document.server";
 import { useAuth } from "~/context/AuthContext";
 import { verifyToken } from "~/models/user.server";
 import { serializeDocument } from "~/types/document";
+import { useAuthenticatedFetch } from "~/hooks/useAuthenticatedFetch";
 
 interface LoaderData {
   documents: SerializedDocument[];
@@ -73,6 +74,7 @@ export default function Documents() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const revalidator = useRevalidator();
+  const authenticatedFetch = useAuthenticatedFetch();
 
   if (loaderError) {
     return (
@@ -107,16 +109,29 @@ export default function Documents() {
     formData.append("type", docType);
 
     try {
-      const response = await fetch("/api/documents/upload", {
+      console.log('Starting upload to /api/documents/upload...');
+      const response = await authenticatedFetch("/api/documents/upload", {
         method: "POST",
         body: formData,
-        credentials: 'include'
       });
 
+      console.log('Upload response status:', response.status);
+      const contentType = response.headers.get('content-type');
+      console.log('Response content type:', contentType);
+
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Failed to upload document");
+        const text = await response.text();
+        console.error('Upload failed. Response:', text);
+        try {
+          const data = JSON.parse(text);
+          throw new Error(data.error || "Failed to upload document");
+        } catch (e) {
+          throw new Error(`Failed to upload document: ${text}`);
+        }
       }
+
+      const data = await response.json();
+      console.log('Upload successful:', data);
 
       // Reset form and close modal
       if (fileInputRef.current) {
@@ -128,6 +143,7 @@ export default function Documents() {
       // Refresh the documents list
       revalidator.revalidate();
     } catch (error) {
+      console.error('Upload error:', error);
       setError(error instanceof Error ? error.message : "Failed to upload document");
     } finally {
       setIsUploading(false);
@@ -136,9 +152,8 @@ export default function Documents() {
 
   const handleDelete = async (id: string) => {
     try {
-      const response = await fetch(`/api/documents/${id}`, {
+      const response = await authenticatedFetch(`/api/documents/${id}`, {
         method: "DELETE",
-        credentials: 'include'
       });
 
       if (!response.ok) {
@@ -146,10 +161,37 @@ export default function Documents() {
         throw new Error(data.error || "Failed to delete document");
       }
 
-      // Refresh the documents list
-      revalidator.revalidate();
+      const data = await response.json();
+
+      // Only refresh if the delete was successful
+      if (data.success) {
+        revalidator.revalidate();
+      } else {
+        setError(data.error || "Failed to delete document");
+      }
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to delete document");
+    }
+  };
+
+  const renderDocumentContent = (content: string, type: string) => {
+    try {
+      // Try to decode base64 content
+      const decodedContent = atob(content);
+      if (type === "application/pdf") {
+        return (
+          <iframe
+            src={`data:application/pdf;base64,${content}`}
+            className="w-full h-[60vh]"
+            title="PDF Document"
+          />
+        );
+      } else {
+        return <pre className="whitespace-pre-wrap">{decodedContent}</pre>;
+      }
+    } catch {
+      // If decoding fails, display as plain text
+      return <pre className="whitespace-pre-wrap">{content}</pre>;
     }
   };
 
@@ -201,7 +243,11 @@ export default function Documents() {
                   </Button>
                   <Button
                     variant="outline"
-                    onClick={() => handleDelete(doc.id)}
+                    onClick={() => {
+                      if (window.confirm('Are you sure you want to delete this document?')) {
+                        handleDelete(doc.id);
+                      }
+                    }}
                   >
                     Delete
                   </Button>
@@ -217,6 +263,7 @@ export default function Documents() {
         onClose={() => {
           setShowUploadModal(false);
           setSelectedFile(null);
+          setError(null);
           if (fileInputRef.current) {
             fileInputRef.current.value = "";
           }
@@ -227,7 +274,7 @@ export default function Documents() {
           <Select
             label="Document Type"
             value={docType}
-            onChange={(e) => setDocType(e.target.value as DocumentType)}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setDocType(e.target.value as DocumentType)}
             options={[
               { value: "resume", label: "Resume" },
               { value: "job_description", label: "Job Description" },
@@ -248,12 +295,19 @@ export default function Documents() {
             Supported formats: PDF, DOC, DOCX, TXT
           </p>
 
+          {error && (
+            <Alert variant="error" onClose={() => setError(null)}>
+              {error}
+            </Alert>
+          )}
+
           <div className="flex justify-end gap-2">
             <Button
               variant="outline"
               onClick={() => {
                 setShowUploadModal(false);
                 setSelectedFile(null);
+                setError(null);
                 if (fileInputRef.current) {
                   fileInputRef.current.value = "";
                 }
@@ -274,11 +328,14 @@ export default function Documents() {
 
       <Modal
         isOpen={!!selectedDoc}
-        onClose={() => setSelectedDoc(null)}
+        onClose={() => {
+          setSelectedDoc(null);
+          setError(null);
+        }}
         title={selectedDoc?.name ?? ""}
       >
         <div className="max-h-[60vh] overflow-y-auto">
-          <pre className="whitespace-pre-wrap">{selectedDoc?.content}</pre>
+          {selectedDoc && renderDocumentContent(selectedDoc.content, selectedDoc.type)}
         </div>
       </Modal>
     </div>

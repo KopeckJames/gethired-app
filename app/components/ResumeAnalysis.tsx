@@ -3,6 +3,7 @@ import Card from "./Card";
 import Button from "./Button";
 import Select from "./Select";
 import Modal from "./Modal";
+import Alert from "./Alert";
 import type { SerializedDocument } from "~/types/document";
 
 interface ResumeAnalysisProps {
@@ -82,6 +83,7 @@ export default function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }: R
       setAnalysis(data.analysis);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to analyze resume");
+      setAnalysis(null); // Clear any previous analysis on error
     } finally {
       setIsAnalyzing(false);
     }
@@ -131,6 +133,7 @@ export default function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }: R
       setShowOptimizationModal(true);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to optimize resume");
+      setOptimization(null); // Clear any previous optimization on error
     } finally {
       setIsOptimizing(false);
     }
@@ -165,8 +168,9 @@ export default function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }: R
         }),
       });
 
+      const data = await response.json();
+
       if (!response.ok) {
-        const data = await response.json();
         throw new Error(data.error || "Failed to export resume");
       }
 
@@ -204,6 +208,7 @@ export default function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }: R
             onChange={(e) => {
               setSelectedResume(e.target.value);
               setAnalysis(null);
+              setError(null);
             }}
             options={[
               { value: "", label: "Select a resume..." },
@@ -219,6 +224,7 @@ export default function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }: R
             onChange={(e) => {
               setSelectedJob(e.target.value);
               setAnalysis(null);
+              setError(null);
             }}
             options={[
               { value: "", label: "Select a job description..." },
@@ -230,24 +236,28 @@ export default function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }: R
           />
         </div>
         {error && (
-          <p className="mt-2 text-sm text-red-600">{error}</p>
+          <div className="mt-4">
+            <Alert variant="error" onClose={() => setError(null)}>
+              {error}
+            </Alert>
+          </div>
         )}
         <div className="mt-4 flex flex-wrap gap-4">
           <Button
             onClick={() => handleAnalyze()}
             isLoading={isAnalyzing}
-            disabled={!selectedResume || !selectedJob}
+            disabled={!selectedResume || !selectedJob || isAnalyzing}
           >
-            Analyze Resume
+            {isAnalyzing ? "Analyzing..." : "Analyze Resume"}
           </Button>
           {analysis && analysis.score < 90 && (
             <Button
               onClick={handleOptimize}
               isLoading={isOptimizing}
               variant="secondary"
-              disabled={!selectedResume || !selectedJob}
+              disabled={!selectedResume || !selectedJob || isOptimizing}
             >
-              Optimize Resume
+              {isOptimizing ? "Optimizing..." : "Optimize Resume"}
             </Button>
           )}
           {selectedResume && analysis && (
@@ -256,7 +266,7 @@ export default function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }: R
                 onClick={() => handleExport('txt')}
                 isLoading={isExporting}
                 variant="secondary"
-                disabled={!selectedResume}
+                disabled={!selectedResume || isExporting}
               >
                 Export TXT
               </Button>
@@ -264,7 +274,7 @@ export default function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }: R
                 onClick={() => handleExport('pdf')}
                 isLoading={isExporting}
                 variant="secondary"
-                disabled={!selectedResume}
+                disabled={!selectedResume || isExporting}
               >
                 Export PDF
               </Button>
@@ -272,7 +282,7 @@ export default function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }: R
                 onClick={() => handleExport('docx')}
                 isLoading={isExporting}
                 variant="secondary"
-                disabled={!selectedResume}
+                disabled={!selectedResume || isExporting}
               >
                 Export DOCX
               </Button>

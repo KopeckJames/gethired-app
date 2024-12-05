@@ -48,10 +48,8 @@ export function AuthProvider({ children, initialUser, initialAuthState }: AuthPr
           setUser(deserializeUser(data.user));
         }
       } catch (error) {
+        // Don't redirect on verification error, just log it
         console.error('Error verifying auth:', error);
-        setUser(null);
-        document.cookie = 'auth_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
-        navigate('/?error=' + encodeURIComponent('Authentication error. Please try again.'));
       }
     };
 

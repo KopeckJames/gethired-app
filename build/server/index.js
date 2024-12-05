@@ -6,12 +6,10 @@ import { isbot } from "isbot";
 import { renderToPipeableStream } from "react-dom/server";
 import { useState, useEffect, createContext, useCallback, useContext, useReducer, forwardRef, useRef } from "react";
 import { HomeIcon, BriefcaseIcon, DocumentTextIcon, DocumentMagnifyingGlassIcon, ChatBubbleLeftRightIcon, MicrophoneIcon, StopIcon, PaperAirplaneIcon } from "@heroicons/react/24/outline";
-import { MongoClient, ObjectId } from "mongodb";
 import jwt from "jsonwebtoken";
+import { MongoClient, ObjectId } from "mongodb";
 import Anthropic from "@anthropic-ai/sdk";
 import fetch$1 from "node-fetch";
-import { Paragraph, HeadingLevel, TextRun, Document, Packer } from "docx";
-import PDFDocument from "pdfkit";
 import OpenAI from "openai";
 import { createPortal } from "react-dom";
 const ABORT_DELAY = 5e3;
@@ -387,9 +385,6 @@ function AuthProvider({ children, initialUser, initialAuthState }) {
         }
       } catch (error) {
         console.error("Error verifying auth:", error);
-        setUser(null);
-        document.cookie = "auth_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;";
-        navigate("/?error=" + encodeURIComponent("Authentication error. Please try again."));
       }
     };
     if (initialAuthState) {
@@ -521,7 +516,8 @@ function LoginButton() {
   const navigate = useNavigate();
   const handleLogin = async () => {
     try {
-      const redirectUri = `${window.location.origin}/auth/callback`;
+      const baseUrl = window.ENV.APP_URL || window.location.origin;
+      const redirectUri = `${baseUrl}/auth/callback`;
       const googleAuthUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
       googleAuthUrl.searchParams.append("client_id", window.ENV.GOOGLE_CLIENT_ID);
       googleAuthUrl.searchParams.append("redirect_uri", redirectUri);
@@ -626,20 +622,23 @@ function Layout({ children }) {
 function getPublicEnv() {
   return {
     MONGODB_URI: process.env.MONGODB_URI,
-    GOOGLE_CLIENT_ID: "232275253964-6t8o4dc1p4n6hp3ocev5llannel7qm5l.apps.googleusercontent.com"
+    GOOGLE_CLIENT_ID: "232275253964-6t8o4dc1p4n6hp3ocev5llannel7qm5l.apps.googleusercontent.com",
+    APP_URL: process.env.APP_URL
   };
 }
 const ENV = {
   MONGODB_URI: process.env.MONGODB_URI,
   GOOGLE_CLIENT_ID: "232275253964-6t8o4dc1p4n6hp3ocev5llannel7qm5l.apps.googleusercontent.com",
   GOOGLE_CLIENT_SECRET: "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",
-  JWT_SECRET: process.env.JWT_SECRET
+  JWT_SECRET: process.env.JWT_SECRET,
+  APP_URL: process.env.APP_URL
 };
 const requiredServerEnvVars = [
   "MONGODB_URI",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
-  "JWT_SECRET"
+  "JWT_SECRET",
+  "APP_URL"
 ];
 for (const envVar of requiredServerEnvVars) {
   if (!ENV[envVar]) {
@@ -648,7 +647,8 @@ for (const envVar of requiredServerEnvVars) {
 }
 const requiredClientEnvVars = [
   "MONGODB_URI",
-  "GOOGLE_CLIENT_ID"
+  "GOOGLE_CLIENT_ID",
+  "APP_URL"
 ];
 function validatePublicEnv() {
   const env = getPublicEnv();
@@ -660,86 +660,196 @@ function validatePublicEnv() {
 }
 let db;
 async function connect() {
+  console.log("Attempting to connect to MongoDB...");
   if (!process.env.MONGODB_URI) {
+    console.error("MONGODB_URI is not defined in environment variables");
     throw new Error("MONGODB_URI is required");
   }
-  if (process.env.NODE_ENV === "production") {
-    db = await MongoClient.connect(process.env.MONGODB_URI);
+  try {
+    if (process.env.NODE_ENV === "production") {
+      console.log("Connecting in production mode...");
+      db = await MongoClient.connect(process.env.MONGODB_URI, {
+        maxPoolSize: 10,
+        minPoolSize: 5,
+        maxIdleTimeMS: 6e4,
+        connectTimeoutMS: 3e4
+      });
+      console.log("Successfully connected to MongoDB in production");
+      return db;
+    }
+    if (!global.__db) {
+      console.log("Creating new development connection...");
+      global.__db = await MongoClient.connect(process.env.MONGODB_URI, {
+        maxPoolSize: 10,
+        minPoolSize: 5,
+        maxIdleTimeMS: 6e4,
+        connectTimeoutMS: 3e4
+      });
+      console.log("Successfully connected to MongoDB in development");
+    } else {
+      console.log("Using existing development connection");
+    }
+    db = global.__db;
     return db;
+  } catch (error) {
+    console.error("Failed to connect to MongoDB:", error);
+    throw error;
   }
-  if (!global.__db) {
-    global.__db = await MongoClient.connect(process.env.MONGODB_URI);
-  }
-  db = global.__db;
-  return db;
 }
 async function getDb() {
-  if (!db) {
+  try {
+    if (!db) {
+      console.log("No existing connection, connecting to MongoDB...");
+      await connect();
+    }
+    await db.db().command({ ping: 1 });
+    console.log("MongoDB connection is valid");
+    return db;
+  } catch (error) {
+    console.error("Error getting MongoDB connection:", error);
+    console.log("Attempting to reconnect...");
     await connect();
+    return db;
   }
-  return db;
 }
-function mapUserDocument(doc) {
-  return {
-    id: doc._id.toString(),
-    email: doc.email,
-    name: doc.name,
-    picture: doc.picture,
-    createdAt: doc.createdAt
-  };
-}
-async function createUser(data) {
-  const db2 = await getDb();
-  const existingUser = await db2.db().collection("users").findOne({ email: data.email });
-  if (existingUser) {
-    return mapUserDocument(existingUser);
+async function closeDb() {
+  try {
+    if (db) {
+      console.log("Closing MongoDB connection...");
+      await db.close();
+      db = void 0;
+      console.log("MongoDB connection closed successfully");
+    }
+  } catch (error) {
+    console.error("Error closing MongoDB connection:", error);
+    throw error;
   }
-  const newUser = {
-    ...data,
-    createdAt: /* @__PURE__ */ new Date()
-  };
-  const result = await db2.db().collection("users").insertOne(newUser);
+}
+process.on("beforeExit", async () => {
+  await closeDb();
+});
+function mapUserToResponse(user) {
   return {
-    id: result.insertedId.toString(),
-    ...data,
-    createdAt: /* @__PURE__ */ new Date()
+    id: user._id.toString(),
+    email: user.email,
+    name: user.name,
+    picture: user.picture,
+    createdAt: user.createdAt
   };
 }
-async function getUserById(id) {
-  const db2 = await getDb();
-  const user = await db2.db().collection("users").findOne({ _id: new ObjectId(id) });
-  if (!user) return null;
-  return mapUserDocument(user);
+async function authenticateWithGoogle(code) {
+  console.log("Authenticating with Google...");
+  try {
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        code,
+        client_id: "232275253964-6t8o4dc1p4n6hp3ocev5llannel7qm5l.apps.googleusercontent.com",
+        client_secret: "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",
+        redirect_uri: `${process.env.APP_URL}/auth/callback`,
+        grant_type: "authorization_code"
+      })
+    });
+    if (!tokenResponse.ok) {
+      console.error("Failed to exchange code for tokens:", await tokenResponse.text());
+      throw new Error("Failed to exchange code for tokens");
+    }
+    const { access_token } = await tokenResponse.json();
+    const userResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+      headers: {
+        "Authorization": `Bearer ${access_token}`
+      }
+    });
+    if (!userResponse.ok) {
+      console.error("Failed to get user info from Google:", await userResponse.text());
+      throw new Error("Failed to get user info from Google");
+    }
+    const { email, name, picture } = await userResponse.json();
+    const user = await findOrCreateUser(email, name, picture);
+    const token = await createAuthToken(user);
+    console.log("Google authentication successful for user:", user.id);
+    return { user, token };
+  } catch (error) {
+    console.error("Error during Google authentication:", error);
+    throw error;
+  }
 }
-function generateToken(user) {
+async function findOrCreateUser(email, name, picture) {
+  console.log("Finding or creating user:", { email, name });
+  try {
+    const db2 = await getDb();
+    const collection = db2.db().collection("users");
+    const existingUser = await collection.findOne({ email });
+    if (existingUser) {
+      console.log("Found existing user:", existingUser._id.toString());
+      return mapUserToResponse(existingUser);
+    }
+    const newUser = {
+      email,
+      name,
+      picture,
+      createdAt: /* @__PURE__ */ new Date()
+    };
+    const result = await collection.insertOne(newUser);
+    console.log("Created new user:", result.insertedId.toString());
+    return {
+      id: result.insertedId.toString(),
+      email,
+      name,
+      picture,
+      createdAt: newUser.createdAt
+    };
+  } catch (error) {
+    console.error("Error finding/creating user:", error);
+    throw error;
+  }
+}
+async function createAuthToken(user) {
+  console.log("Creating auth token for user:", user.id);
   if (!process.env.JWT_SECRET) {
+    console.error("JWT_SECRET is not defined");
     throw new Error("JWT_SECRET is required");
   }
-  return jwt.sign(
-    {
-      userId: user.id,
-      email: user.email
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: "7d" }
-  );
+  try {
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        email: user.email
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+    console.log("Auth token created successfully");
+    return token;
+  } catch (error) {
+    console.error("Error creating auth token:", error);
+    throw error;
+  }
 }
 async function verifyToken(token) {
+  console.log("Verifying auth token");
   if (!process.env.JWT_SECRET) {
+    console.error("JWT_SECRET is not defined");
     throw new Error("JWT_SECRET is required");
   }
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await getUserById(decoded.userId);
-    return user;
+    console.log("Token decoded successfully for user:", decoded.userId);
+    const db2 = await getDb();
+    const user = await db2.db().collection("users").findOne({ _id: new ObjectId(decoded.userId) });
+    if (!user) {
+      console.log("No user found for decoded token");
+      return null;
+    }
+    console.log("User found and verified:", user._id.toString());
+    return mapUserToResponse(user);
   } catch (error) {
+    console.error("Error verifying token:", error);
     return null;
   }
-}
-async function authenticateWithGoogle(profile) {
-  const user = await createUser(profile);
-  const token = generateToken(user);
-  return { user, token };
 }
 const links = () => [
   {
@@ -858,6 +968,15 @@ const route0 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
   links,
   loader: loader$4
 }, Symbol.toStringTag, { value: "Module" }));
+function isValidObjectId$3(id) {
+  try {
+    new ObjectId(id);
+    return true;
+  } catch (error) {
+    console.error("Invalid ObjectId:", id, error);
+    return false;
+  }
+}
 function mapDocumentToResponse(doc) {
   return {
     id: doc._id.toString(),
@@ -869,77 +988,92 @@ function mapDocumentToResponse(doc) {
   };
 }
 async function getDocuments(userId) {
-  const db2 = await getDb();
-  const documents = await db2.db().collection("documents").find({ userId: new ObjectId(userId) }).sort({ uploadedAt: -1 }).toArray();
-  return documents.map(mapDocumentToResponse);
+  console.log("Getting documents for user:", userId);
+  if (!isValidObjectId$3(userId)) {
+    console.error("Invalid user ID format:", userId);
+    return [];
+  }
+  try {
+    const db2 = await getDb();
+    const documents = await db2.db().collection("documents").find({ userId: new ObjectId(userId) }).sort({ uploadedAt: -1 }).toArray();
+    console.log(`Found ${documents.length} documents for user ${userId}`);
+    return documents.map(mapDocumentToResponse);
+  } catch (error) {
+    console.error("Error getting documents:", error);
+    throw error;
+  }
 }
 async function getDocumentsByType(type, userId) {
-  const db2 = await getDb();
-  const documents = await db2.db().collection("documents").find({
-    userId: new ObjectId(userId),
-    type
-  }).sort({ uploadedAt: -1 }).toArray();
-  return documents.map(mapDocumentToResponse);
+  console.log("Getting documents by type:", type, "for user:", userId);
+  if (!isValidObjectId$3(userId)) {
+    console.error("Invalid user ID format:", userId);
+    return [];
+  }
+  try {
+    const db2 = await getDb();
+    const documents = await db2.db().collection("documents").find({
+      userId: new ObjectId(userId),
+      type
+    }).sort({ uploadedAt: -1 }).toArray();
+    console.log(`Found ${documents.length} documents of type ${type} for user ${userId}`);
+    return documents.map(mapDocumentToResponse);
+  } catch (error) {
+    console.error("Error getting documents by type:", error);
+    throw error;
+  }
 }
 async function createDocument(data) {
-  const db2 = await getDb();
-  const doc = {
-    userId: new ObjectId(data.userId),
-    name: data.name,
-    type: data.type,
-    content: data.content,
-    uploadedAt: /* @__PURE__ */ new Date()
-  };
-  const result = await db2.db().collection("documents").insertOne(doc);
-  return {
-    id: result.insertedId.toString(),
-    userId: data.userId,
-    name: data.name,
-    type: data.type,
-    content: data.content,
-    uploadedAt: doc.uploadedAt
-  };
-}
-async function updateDocument(id, userId, content) {
-  const db2 = await getDb();
-  const collection = db2.db().collection("documents");
-  const updateResult = await collection.updateOne(
-    {
-      _id: new ObjectId(id),
-      userId: new ObjectId(userId)
-    },
-    {
-      $set: { content }
-    }
-  );
-  if (updateResult.matchedCount === 0) {
-    return null;
+  console.log("Creating document:", { name: data.name, type: data.type, userId: data.userId });
+  if (!isValidObjectId$3(data.userId)) {
+    console.error("Invalid user ID format:", data.userId);
+    throw new Error("Invalid user ID format");
   }
-  const updatedDoc = await collection.findOne({
-    _id: new ObjectId(id),
-    userId: new ObjectId(userId)
-  });
-  if (!updatedDoc) {
-    return null;
+  try {
+    const db2 = await getDb();
+    const doc = {
+      userId: new ObjectId(data.userId),
+      name: data.name,
+      type: data.type,
+      content: data.content,
+      uploadedAt: /* @__PURE__ */ new Date()
+    };
+    const result = await db2.db().collection("documents").insertOne(doc);
+    console.log("Document created successfully with ID:", result.insertedId);
+    return {
+      id: result.insertedId.toString(),
+      userId: data.userId,
+      name: data.name,
+      type: data.type,
+      content: data.content,
+      uploadedAt: doc.uploadedAt
+    };
+  } catch (error) {
+    console.error("Error creating document:", error);
+    throw error;
   }
-  return mapDocumentToResponse(updatedDoc);
-}
-async function deleteDocument(id, userId) {
-  const db2 = await getDb();
-  const result = await db2.db().collection("documents").deleteOne({
-    _id: new ObjectId(id),
-    userId: new ObjectId(userId)
-  });
-  return result.deletedCount > 0;
 }
 async function getDocument(id, userId) {
-  const db2 = await getDb();
-  const document2 = await db2.db().collection("documents").findOne({
-    _id: new ObjectId(id),
-    userId: new ObjectId(userId)
-  });
-  if (!document2) return null;
-  return mapDocumentToResponse(document2);
+  console.log("Getting document:", id, "for user:", userId);
+  if (!isValidObjectId$3(id) || !isValidObjectId$3(userId)) {
+    console.error("Invalid ID format:", { documentId: id, userId });
+    return null;
+  }
+  try {
+    const db2 = await getDb();
+    const document2 = await db2.db().collection("documents").findOne({
+      _id: new ObjectId(id),
+      userId: new ObjectId(userId)
+    });
+    if (!document2) {
+      console.log("Document not found");
+      return null;
+    }
+    console.log("Document found successfully");
+    return mapDocumentToResponse(document2);
+  } catch (error) {
+    console.error("Error getting document:", error);
+    throw error;
+  }
 }
 if (!process.env.ANTHROPIC_API_KEY) {
   throw new Error("ANTHROPIC_API_KEY is required");
@@ -1049,7 +1183,15 @@ Keep responses focused on career-related topics. Be professional, encouraging, a
   });
   return response.content[0].type === "text" ? response.content[0].text : "";
 }
-async function action$8({ request }) {
+function isValidObjectId$2(id) {
+  try {
+    new ObjectId(id);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+async function action$5({ request }) {
   if (request.method !== "POST") {
     return json(
       { error: "Method not allowed" },
@@ -1066,7 +1208,7 @@ async function action$8({ request }) {
   const token = cookies.auth_token;
   if (!token) {
     return json(
-      { error: "Not authenticated" },
+      { error: "Please sign in to optimize your resume" },
       { status: 401 }
     );
   }
@@ -1074,7 +1216,7 @@ async function action$8({ request }) {
     const user = await verifyToken(token);
     if (!user) {
       return json(
-        { error: "Invalid authentication" },
+        { error: "Your session has expired. Please sign in again." },
         { status: 401 }
       );
     }
@@ -1085,13 +1227,31 @@ async function action$8({ request }) {
         { status: 400 }
       );
     }
+    if (!isValidObjectId$2(resumeId)) {
+      return json(
+        { error: "Invalid resume ID format. The document might have been deleted." },
+        { status: 400 }
+      );
+    }
+    if (!isValidObjectId$2(jobDescriptionId)) {
+      return json(
+        { error: "Invalid job description ID format. The document might have been deleted." },
+        { status: 400 }
+      );
+    }
     const [resume, jobDescription] = await Promise.all([
       getDocument(resumeId, user.id),
       getDocument(jobDescriptionId, user.id)
     ]);
-    if (!resume || !jobDescription) {
+    if (!resume) {
       return json(
-        { error: "Documents not found" },
+        { error: "Resume not found. It might have been deleted." },
+        { status: 404 }
+      );
+    }
+    if (!jobDescription) {
+      return json(
+        { error: "Job description not found. It might have been deleted." },
         { status: 404 }
       );
     }
@@ -1111,15 +1271,23 @@ async function action$8({ request }) {
   } catch (error) {
     console.error("Error optimizing resume:", error);
     return json(
-      { error: error instanceof Error ? error.message : "Failed to optimize resume" },
+      { error: error instanceof Error ? error.message : "Failed to optimize resume. Please try again." },
       { status: 500 }
     );
   }
 }
 const route1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
-  action: action$8
+  action: action$5
 }, Symbol.toStringTag, { value: "Module" }));
+function isValidObjectId$1(id) {
+  try {
+    new ObjectId(id);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
 async function formatWithAnthropic(content) {
   var _a, _b;
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -1195,7 +1363,7 @@ async function createFormattedDocument(originalDoc, formattedContent) {
     userId: originalDoc.userId
   });
 }
-async function action$7({ request }) {
+async function action$4({ request }) {
   if (request.method !== "POST") {
     return json(
       { error: "Method not allowed" },
@@ -1212,7 +1380,7 @@ async function action$7({ request }) {
   const token = cookies.auth_token;
   if (!token) {
     return json(
-      { error: "Not authenticated" },
+      { error: "Please sign in to format your resume" },
       { status: 401 }
     );
   }
@@ -1220,7 +1388,7 @@ async function action$7({ request }) {
     const user = await verifyToken(token);
     if (!user) {
       return json(
-        { error: "Invalid authentication" },
+        { error: "Your session has expired. Please sign in again." },
         { status: 401 }
       );
     }
@@ -1231,10 +1399,16 @@ async function action$7({ request }) {
         { status: 400 }
       );
     }
+    if (!isValidObjectId$1(resumeId)) {
+      return json(
+        { error: "Invalid resume ID format. The document might have been deleted." },
+        { status: 400 }
+      );
+    }
     const resume = await getDocument(resumeId, user.id);
     if (!resume) {
       return json(
-        { error: "Resume not found" },
+        { error: "Resume not found. It might have been deleted." },
         { status: 404 }
       );
     }
@@ -1250,259 +1424,24 @@ async function action$7({ request }) {
   } catch (error) {
     console.error("Error formatting resume:", error);
     return json(
-      { error: error instanceof Error ? error.message : "Failed to format resume" },
+      { error: error instanceof Error ? error.message : "Failed to format resume. Please try again." },
       { status: 500 }
     );
   }
 }
 const route2 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
-  action: action$7
+  action: action$4
 }, Symbol.toStringTag, { value: "Module" }));
-function formatAnalysisSummary(analysis, score) {
-  if (!analysis) return "";
-  return `
-=== RESUME ANALYSIS SUMMARY ===
-Overall Score: ${score !== void 0 ? `${score}%` : "N/A"}
-
-Keywords Found:
-${analysis.keywordsFound.map((k) => `• ${k}`).join("\n")}
-
-Missing Keywords:
-${analysis.missingKeywords.map((k) => `• ${k}`).join("\n")}
-
-Recommendations:
-${analysis.recommendations.map((r) => `• ${r}`).join("\n")}
-
-Summary:
-${analysis.summary}
-
-============================
-`;
-}
-async function generateDocx(content, analysis, score) {
-  const children = [];
-  if (analysis) {
-    children.push(
-      new Paragraph({
-        text: "RESUME ANALYSIS SUMMARY",
-        heading: HeadingLevel.HEADING_1
-      }),
-      new Paragraph({
-        children: [
-          new TextRun({
-            text: `Overall Score: ${score !== void 0 ? `${score}%` : "N/A"}`,
-            bold: true,
-            size: 24
-          })
-        ]
-      }),
-      new Paragraph({
-        text: "Keywords Found:",
-        heading: HeadingLevel.HEADING_2
-      }),
-      ...analysis.keywordsFound.map(
-        (keyword) => new Paragraph({
-          children: [
-            new TextRun({ text: "• ", size: 24 }),
-            new TextRun({ text: keyword, size: 24 })
-          ]
-        })
-      ),
-      new Paragraph({
-        text: "Missing Keywords:",
-        heading: HeadingLevel.HEADING_2
-      }),
-      ...analysis.missingKeywords.map(
-        (keyword) => new Paragraph({
-          children: [
-            new TextRun({ text: "• ", size: 24 }),
-            new TextRun({ text: keyword, size: 24 })
-          ]
-        })
-      ),
-      new Paragraph({
-        text: "Recommendations:",
-        heading: HeadingLevel.HEADING_2
-      }),
-      ...analysis.recommendations.map(
-        (rec) => new Paragraph({
-          children: [
-            new TextRun({ text: "• ", size: 24 }),
-            new TextRun({ text: rec, size: 24 })
-          ]
-        })
-      ),
-      new Paragraph({
-        text: "Summary:",
-        heading: HeadingLevel.HEADING_2
-      }),
-      new Paragraph({
-        children: [
-          new TextRun({
-            text: analysis.summary,
-            size: 24
-          })
-        ]
-      }),
-      new Paragraph({
-        children: [
-          new TextRun({
-            text: "\n============================\n\n",
-            size: 24
-          })
-        ]
-      })
-    );
-  }
-  children.push(
-    ...content.split("\n").map(
-      (line) => new Paragraph({
-        children: [
-          new TextRun({
-            text: line,
-            size: 24
-            // 12pt
-          })
-        ]
-      })
-    )
-  );
-  const doc = new Document({
-    sections: [{
-      properties: {},
-      children
-    }]
-  });
-  return await Packer.toBuffer(doc);
-}
-async function generatePdf(content, analysis, score) {
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument();
-    const chunks = [];
-    doc.on("data", (chunk) => chunks.push(chunk));
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
-    doc.on("error", reject);
-    if (analysis) {
-      doc.fontSize(16).text("RESUME ANALYSIS SUMMARY");
-      doc.fontSize(12).text(`Overall Score: ${score !== void 0 ? `${score}%` : "N/A"}`);
-      doc.moveDown().fontSize(14).text("Keywords Found:");
-      analysis.keywordsFound.forEach((keyword) => {
-        doc.fontSize(12).text(`• ${keyword}`);
-      });
-      doc.moveDown().fontSize(14).text("Missing Keywords:");
-      analysis.missingKeywords.forEach((keyword) => {
-        doc.fontSize(12).text(`• ${keyword}`);
-      });
-      doc.moveDown().fontSize(14).text("Recommendations:");
-      analysis.recommendations.forEach((rec) => {
-        doc.fontSize(12).text(`• ${rec}`);
-      });
-      doc.moveDown().fontSize(14).text("Summary:");
-      doc.fontSize(12).text(analysis.summary);
-      doc.moveDown().text("============================").moveDown();
-    }
-    doc.fontSize(12);
-    content.split("\n").forEach((line) => {
-      doc.text(line.trim());
-      if (line.trim() === "") {
-        doc.moveDown();
-      }
-    });
-    doc.end();
-  });
-}
-async function action$6({ request }) {
-  if (request.method !== "POST") {
-    return json(
-      { error: "Method not allowed" },
-      { status: 405 }
-    );
-  }
-  const cookieHeader = request.headers.get("Cookie") || "";
-  const cookies = Object.fromEntries(
-    cookieHeader.split("; ").map((cookie) => {
-      const [name, value] = cookie.split("=");
-      return [name, decodeURIComponent(value)];
-    })
-  );
-  const token = cookies.auth_token;
-  if (!token) {
-    return json(
-      { error: "Not authenticated" },
-      { status: 401 }
-    );
-  }
+function isValidObjectId(id) {
   try {
-    const user = await verifyToken(token);
-    if (!user) {
-      return json(
-        { error: "Invalid authentication" },
-        { status: 401 }
-      );
-    }
-    const { documentId, format, score, analysis } = await request.json();
-    if (!documentId || !format) {
-      return json(
-        { error: "Document ID and format are required" },
-        { status: 400 }
-      );
-    }
-    if (!["txt", "pdf", "docx"].includes(format)) {
-      return json(
-        { error: "Invalid format. Supported formats: txt, pdf, docx" },
-        { status: 400 }
-      );
-    }
-    const document2 = await getDocument(documentId, user.id);
-    if (!document2) {
-      return json(
-        { error: "Document not found" },
-        { status: 404 }
-      );
-    }
-    let fileContent;
-    let contentType;
-    let fileName;
-    const scoreText = score ? `_${Math.round(score)}%` : "";
-    switch (format) {
-      case "txt":
-        fileContent = analysis ? formatAnalysisSummary(analysis, score) + document2.content : document2.content;
-        contentType = "text/plain";
-        fileName = `${document2.name}${scoreText}.txt`;
-        break;
-      case "pdf":
-        fileContent = await generatePdf(document2.content, analysis, score);
-        contentType = "application/pdf";
-        fileName = `${document2.name}${scoreText}.pdf`;
-        break;
-      case "docx":
-        fileContent = await generateDocx(document2.content, analysis, score);
-        contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-        fileName = `${document2.name}${scoreText}.docx`;
-        break;
-      default:
-        throw new Error(`Unsupported format: ${format}`);
-    }
-    return new Response(fileContent, {
-      headers: {
-        "Content-Type": contentType,
-        "Content-Disposition": `attachment; filename="${fileName}"`
-      }
-    });
+    new ObjectId(id);
+    return true;
   } catch (error) {
-    console.error("Error exporting document:", error);
-    return json(
-      { error: error instanceof Error ? error.message : "Failed to export document" },
-      { status: 500 }
-    );
+    return false;
   }
 }
-const route3 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
-  __proto__: null,
-  action: action$6
-}, Symbol.toStringTag, { value: "Module" }));
-async function action$5({ request }) {
+async function action$3({ request }) {
   if (request.method !== "POST") {
     return json(
       { error: "Method not allowed" },
@@ -1519,7 +1458,7 @@ async function action$5({ request }) {
   const token = cookies.auth_token;
   if (!token) {
     return json(
-      { error: "Not authenticated" },
+      { error: "Please sign in to analyze documents" },
       { status: 401 }
     );
   }
@@ -1527,7 +1466,7 @@ async function action$5({ request }) {
     const user = await verifyToken(token);
     if (!user) {
       return json(
-        { error: "Invalid authentication" },
+        { error: "Your session has expired. Please sign in again." },
         { status: 401 }
       );
     }
@@ -1538,13 +1477,31 @@ async function action$5({ request }) {
         { status: 400 }
       );
     }
+    if (!isValidObjectId(resumeId)) {
+      return json(
+        { error: "Invalid resume ID format. The document might have been deleted." },
+        { status: 400 }
+      );
+    }
+    if (!isValidObjectId(jobDescriptionId)) {
+      return json(
+        { error: "Invalid job description ID format. The document might have been deleted." },
+        { status: 400 }
+      );
+    }
     const [resume, jobDescription] = await Promise.all([
       getDocument(resumeId, user.id),
       getDocument(jobDescriptionId, user.id)
     ]);
-    if (!resume || !jobDescription) {
+    if (!resume) {
       return json(
-        { error: "Documents not found" },
+        { error: "Resume not found. It might have been deleted." },
+        { status: 404 }
+      );
+    }
+    if (!jobDescription) {
+      return json(
+        { error: "Job description not found. It might have been deleted." },
         { status: 404 }
       );
     }
@@ -1553,88 +1510,14 @@ async function action$5({ request }) {
   } catch (error) {
     console.error("Error analyzing resume:", error);
     return json(
-      { error: error instanceof Error ? error.message : "Failed to analyze resume" },
+      { error: error instanceof Error ? error.message : "Failed to analyze resume. Please try again." },
       { status: 500 }
     );
   }
 }
-const route4 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route3 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
-  action: action$5
-}, Symbol.toStringTag, { value: "Module" }));
-async function action$4({ request, params }) {
-  const { id } = params;
-  if (!id) {
-    return json({ error: "Document ID is required" }, { status: 400 });
-  }
-  const cookieHeader = request.headers.get("Cookie") || "";
-  const cookies = Object.fromEntries(
-    cookieHeader.split("; ").map((cookie) => {
-      const [name, value] = cookie.split("=");
-      return [name, decodeURIComponent(value)];
-    })
-  );
-  const token = cookies.auth_token;
-  if (!token) {
-    return json(
-      { error: "Not authenticated" },
-      { status: 401 }
-    );
-  }
-  try {
-    const user = await verifyToken(token);
-    if (!user) {
-      return json(
-        { error: "Invalid authentication" },
-        { status: 401 }
-      );
-    }
-    const document2 = await getDocument(id, user.id);
-    if (!document2) {
-      return json(
-        { error: "Document not found" },
-        { status: 404 }
-      );
-    }
-    if (request.method === "DELETE") {
-      const success = await deleteDocument(id, user.id);
-      if (!success) {
-        return json(
-          { error: "Failed to delete document" },
-          { status: 500 }
-        );
-      }
-      return json({ success: true });
-    }
-    if (request.method === "PUT") {
-      const { content } = await request.json();
-      if (!content) {
-        return json(
-          { error: "Content is required" },
-          { status: 400 }
-        );
-      }
-      const updatedDoc = await updateDocument(id, user.id, content);
-      if (!updatedDoc) {
-        return json(
-          { error: "Failed to update document" },
-          { status: 500 }
-        );
-      }
-      return json({ success: true, document: updatedDoc });
-    }
-    return json({ error: "Method not allowed" }, { status: 405 });
-  } catch (error) {
-    console.error("Error handling document:", error);
-    return json(
-      { error: "Failed to process document" },
-      { status: 500 }
-    );
-  }
-}
-const route5 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
-  __proto__: null,
-  action: action$4
+  action: action$3
 }, Symbol.toStringTag, { value: "Module" }));
 if (!process.env.OPENAI_API_KEY) {
   throw new Error("OPENAI_API_KEY is required");
@@ -1689,7 +1572,7 @@ async function processAudioChunk(chunk) {
     throw new Error("Failed to process audio chunk");
   }
 }
-async function action$3({ request }) {
+async function action$2({ request }) {
   if (request.method !== "POST") {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
@@ -1753,9 +1636,9 @@ async function action$3({ request }) {
     );
   }
 }
-const route6 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route4 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
-  action: action$3
+  action: action$2
 }, Symbol.toStringTag, { value: "Module" }));
 const variantStyles$4 = {
   default: "bg-white",
@@ -2111,6 +1994,7 @@ function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }) {
       setAnalysis(data.analysis);
     } catch (error2) {
       setError(error2 instanceof Error ? error2.message : "Failed to analyze resume");
+      setAnalysis(null);
     } finally {
       setIsAnalyzing(false);
     }
@@ -2146,6 +2030,7 @@ function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }) {
       setShowOptimizationModal(true);
     } catch (error2) {
       setError(error2 instanceof Error ? error2.message : "Failed to optimize resume");
+      setOptimization(null);
     } finally {
       setIsOptimizing(false);
     }
@@ -2177,8 +2062,8 @@ function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }) {
           } : void 0
         })
       });
+      const data = await response.json();
       if (!response.ok) {
-        const data = await response.json();
         throw new Error(data.error || "Failed to export resume");
       }
       const contentDisposition = response.headers.get("Content-Disposition");
@@ -2210,6 +2095,7 @@ function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }) {
             onChange: (e) => {
               setSelectedResume(e.target.value);
               setAnalysis(null);
+              setError(null);
             },
             options: [
               { value: "", label: "Select a resume..." },
@@ -2228,6 +2114,7 @@ function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }) {
             onChange: (e) => {
               setSelectedJob(e.target.value);
               setAnalysis(null);
+              setError(null);
             },
             options: [
               { value: "", label: "Select a job description..." },
@@ -2239,15 +2126,15 @@ function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }) {
           }
         )
       ] }),
-      error && /* @__PURE__ */ jsx("p", { className: "mt-2 text-sm text-red-600", children: error }),
+      error && /* @__PURE__ */ jsx("div", { className: "mt-4", children: /* @__PURE__ */ jsx(Alert, { variant: "error", onClose: () => setError(null), children: error }) }),
       /* @__PURE__ */ jsxs("div", { className: "mt-4 flex flex-wrap gap-4", children: [
         /* @__PURE__ */ jsx(
           Button,
           {
             onClick: () => handleAnalyze(),
             isLoading: isAnalyzing,
-            disabled: !selectedResume || !selectedJob,
-            children: "Analyze Resume"
+            disabled: !selectedResume || !selectedJob || isAnalyzing,
+            children: isAnalyzing ? "Analyzing..." : "Analyze Resume"
           }
         ),
         analysis && analysis.score < 90 && /* @__PURE__ */ jsx(
@@ -2256,8 +2143,8 @@ function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }) {
             onClick: handleOptimize,
             isLoading: isOptimizing,
             variant: "secondary",
-            disabled: !selectedResume || !selectedJob,
-            children: "Optimize Resume"
+            disabled: !selectedResume || !selectedJob || isOptimizing,
+            children: isOptimizing ? "Optimizing..." : "Optimize Resume"
           }
         ),
         selectedResume && analysis && /* @__PURE__ */ jsxs("div", { className: "flex gap-2", children: [
@@ -2267,7 +2154,7 @@ function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }) {
               onClick: () => handleExport("txt"),
               isLoading: isExporting,
               variant: "secondary",
-              disabled: !selectedResume,
+              disabled: !selectedResume || isExporting,
               children: "Export TXT"
             }
           ),
@@ -2277,7 +2164,7 @@ function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }) {
               onClick: () => handleExport("pdf"),
               isLoading: isExporting,
               variant: "secondary",
-              disabled: !selectedResume,
+              disabled: !selectedResume || isExporting,
               children: "Export PDF"
             }
           ),
@@ -2287,7 +2174,7 @@ function ResumeAnalysis({ resumes, jobDescriptions, onUpdate }) {
               onClick: () => handleExport("docx"),
               isLoading: isExporting,
               variant: "secondary",
-              disabled: !selectedResume,
+              disabled: !selectedResume || isExporting,
               children: "Export DOCX"
             }
           )
@@ -2465,7 +2352,7 @@ function ResumeAnalysisPage() {
     )
   ] });
 }
-const route7 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route5 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: ResumeAnalysisPage,
   loader: loader$3
@@ -2473,63 +2360,31 @@ const route7 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
 async function loader$2({ request }) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
-  const error = url.searchParams.get("error");
-  if (error) {
-    return redirect("/?error=" + encodeURIComponent(error));
-  }
   if (!code) {
-    return redirect("/?error=" + encodeURIComponent("No authorization code provided"));
+    return redirect("/?error=No authorization code provided");
   }
   try {
-    const response = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
+    const { token } = await authenticateWithGoogle(code);
+    return redirect("/", {
       headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        code,
-        client_id: "232275253964-6t8o4dc1p4n6hp3ocev5llannel7qm5l.apps.googleusercontent.com",
-        client_secret: "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",
-        redirect_uri: `${url.origin}/auth/callback`,
-        grant_type: "authorization_code"
-      })
-    });
-    if (!response.ok) {
-      throw new Error("Failed to exchange code for token");
-    }
-    const { access_token } = await response.json();
-    const userInfoResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-      headers: {
-        Authorization: `Bearer ${access_token}`
+        "Set-Cookie": `auth_token=${token}; Path=/; HttpOnly; SameSite=Lax`
       }
     });
-    if (!userInfoResponse.ok) {
-      throw new Error("Failed to get user info");
-    }
-    const googleUser = await userInfoResponse.json();
-    const { user, token } = await authenticateWithGoogle({
-      email: googleUser.email,
-      name: googleUser.name,
-      picture: googleUser.picture
-    });
-    const headers = new Headers();
-    headers.append(
-      "Set-Cookie",
-      `auth_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 7}`
-      // 7 days
-    );
-    return redirect("/", {
-      headers
-    });
-  } catch (error2) {
-    console.error("Auth callback error:", error2);
+  } catch (error) {
+    console.error("OAuth callback error:", error);
     return redirect(
-      "/?error=" + encodeURIComponent("Authentication failed. Please try again.")
+      `/?error=${encodeURIComponent(
+        "Failed to authenticate with Google. Please try again."
+      )}`
     );
   }
 }
-const route8 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+function AuthCallback() {
+  return null;
+}
+const route6 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
+  default: AuthCallback,
   loader: loader$2
 }, Symbol.toStringTag, { value: "Module" }));
 const variantStyles$2 = {
@@ -3063,11 +2918,11 @@ function Applications() {
     )
   ] });
 }
-const route9 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route7 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Applications
 }, Symbol.toStringTag, { value: "Module" }));
-async function action$2({ request }) {
+async function action$1({ request }) {
   if (request.method !== "POST") {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
@@ -3080,52 +2935,7 @@ async function action$2({ request }) {
     }
   );
 }
-const route10 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
-  __proto__: null,
-  action: action$2
-}, Symbol.toStringTag, { value: "Module" }));
-async function action$1({ request }) {
-  if (request.method !== "POST") {
-    return json({ error: "Method not allowed" }, { status: 405 });
-  }
-  const cookieHeader = request.headers.get("Cookie") || "";
-  const cookies = Object.fromEntries(
-    cookieHeader.split("; ").map((cookie) => {
-      const [name, value] = cookie.split("=");
-      return [name, decodeURIComponent(value)];
-    })
-  );
-  const token = cookies.auth_token;
-  if (!token) {
-    return json({ error: "No token provided" }, { status: 401 });
-  }
-  try {
-    const user = await verifyToken(token);
-    if (!user) {
-      return json({ error: "Invalid token" }, { status: 401 });
-    }
-    return json({
-      user: serializeUser(user),
-      isAuthenticated: true
-    }, {
-      headers: {
-        "Content-Type": "application/json"
-      }
-    });
-  } catch (error) {
-    console.error("Error verifying token:", error);
-    return json(
-      { error: "Failed to verify token" },
-      {
-        status: 500,
-        headers: {
-          "Content-Type": "application/json"
-        }
-      }
-    );
-  }
-}
-const route11 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route8 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   action: action$1
 }, Symbol.toStringTag, { value: "Module" }));
@@ -3441,11 +3251,47 @@ function VoiceNotes() {
     ] })
   ] });
 }
-const route12 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route9 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: VoiceNotes,
   loader: loader$1
 }, Symbol.toStringTag, { value: "Module" }));
+function useAuthenticatedFetch() {
+  const { user, isAuthenticated } = useAuth();
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (!user) {
+      navigate("/?error=Please%20log%20in%20to%20continue");
+    }
+  }, [user, navigate]);
+  return async (input, init) => {
+    try {
+      if (!isAuthenticated) {
+        navigate("/?error=Please%20log%20in%20to%20continue");
+        throw new Error("Not authenticated");
+      }
+      const response = await fetch(input, {
+        ...init,
+        credentials: "include",
+        headers: {
+          ...init == null ? void 0 : init.headers,
+          "Accept": "application/json"
+        }
+      });
+      if (response.status === 401) {
+        navigate("/?error=Session%20expired.%20Please%20log%20in%20again");
+        throw new Error("Unauthorized");
+      }
+      return response;
+    } catch (error) {
+      if (error instanceof Error && error.message === "Not authenticated") {
+        throw error;
+      }
+      console.error("Request failed:", error);
+      throw new Error("Failed to make request");
+    }
+  };
+}
 async function loader({ request }) {
   const cookieHeader = request.headers.get("Cookie") || "";
   const cookies = Object.fromEntries(
@@ -3494,6 +3340,7 @@ function Documents() {
   const [selectedFile, setSelectedFile] = useState(null);
   const fileInputRef = useRef(null);
   const revalidator = useRevalidator();
+  const authenticatedFetch = useAuthenticatedFetch();
   if (loaderError) {
     return /* @__PURE__ */ jsx("div", { className: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8", children: /* @__PURE__ */ jsxs("div", { className: "text-center", children: [
       /* @__PURE__ */ jsx("h1", { className: "text-2xl font-bold text-red-600 mb-4", children: "Error" }),
@@ -3519,15 +3366,15 @@ function Documents() {
     formData.append("file", selectedFile);
     formData.append("type", docType);
     try {
-      const response = await fetch("/api/documents/upload", {
+      const response = await authenticatedFetch("/api/documents/upload", {
         method: "POST",
-        body: formData,
-        credentials: "include"
+        body: formData
       });
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Failed to upload document");
+        const data2 = await response.json();
+        throw new Error(data2.error || "Failed to upload document");
       }
+      const data = await response.json();
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -3542,17 +3389,40 @@ function Documents() {
   };
   const handleDelete = async (id) => {
     try {
-      const response = await fetch(`/api/documents/${id}`, {
-        method: "DELETE",
-        credentials: "include"
+      const response = await authenticatedFetch(`/api/documents/${id}`, {
+        method: "DELETE"
       });
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Failed to delete document");
+        const data2 = await response.json();
+        throw new Error(data2.error || "Failed to delete document");
       }
-      revalidator.revalidate();
+      const data = await response.json();
+      if (data.success) {
+        revalidator.revalidate();
+      } else {
+        setError(data.error || "Failed to delete document");
+      }
     } catch (error2) {
       setError(error2 instanceof Error ? error2.message : "Failed to delete document");
+    }
+  };
+  const renderDocumentContent = (content, type) => {
+    try {
+      const decodedContent = atob(content);
+      if (type === "application/pdf") {
+        return /* @__PURE__ */ jsx(
+          "iframe",
+          {
+            src: `data:application/pdf;base64,${content}`,
+            className: "w-full h-[60vh]",
+            title: "PDF Document"
+          }
+        );
+      } else {
+        return /* @__PURE__ */ jsx("pre", { className: "whitespace-pre-wrap", children: decodedContent });
+      }
+    } catch {
+      return /* @__PURE__ */ jsx("pre", { className: "whitespace-pre-wrap", children: content });
     }
   };
   return /* @__PURE__ */ jsxs("div", { className: "space-y-6", children: [
@@ -3592,7 +3462,11 @@ function Documents() {
               Button,
               {
                 variant: "outline",
-                onClick: () => handleDelete(doc.id),
+                onClick: () => {
+                  if (window.confirm("Are you sure you want to delete this document?")) {
+                    handleDelete(doc.id);
+                  }
+                },
                 children: "Delete"
               }
             )
@@ -3608,6 +3482,7 @@ function Documents() {
         onClose: () => {
           setShowUploadModal(false);
           setSelectedFile(null);
+          setError(null);
           if (fileInputRef.current) {
             fileInputRef.current.value = "";
           }
@@ -3639,6 +3514,7 @@ function Documents() {
             }
           ),
           /* @__PURE__ */ jsx("p", { className: "text-sm text-gray-500", children: "Supported formats: PDF, DOC, DOCX, TXT" }),
+          error && /* @__PURE__ */ jsx(Alert, { variant: "error", onClose: () => setError(null), children: error }),
           /* @__PURE__ */ jsxs("div", { className: "flex justify-end gap-2", children: [
             /* @__PURE__ */ jsx(
               Button,
@@ -3647,6 +3523,7 @@ function Documents() {
                 onClick: () => {
                   setShowUploadModal(false);
                   setSelectedFile(null);
+                  setError(null);
                   if (fileInputRef.current) {
                     fileInputRef.current.value = "";
                   }
@@ -3671,14 +3548,17 @@ function Documents() {
       Modal,
       {
         isOpen: !!selectedDoc,
-        onClose: () => setSelectedDoc(null),
+        onClose: () => {
+          setSelectedDoc(null);
+          setError(null);
+        },
         title: (selectedDoc == null ? void 0 : selectedDoc.name) ?? "",
-        children: /* @__PURE__ */ jsx("div", { className: "max-h-[60vh] overflow-y-auto", children: /* @__PURE__ */ jsx("pre", { className: "whitespace-pre-wrap", children: selectedDoc == null ? void 0 : selectedDoc.content }) })
+        children: /* @__PURE__ */ jsx("div", { className: "max-h-[60vh] overflow-y-auto", children: selectedDoc && renderDocumentContent(selectedDoc.content, selectedDoc.type) })
       }
     )
   ] });
 }
-const route13 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route10 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Documents,
   loader
@@ -3731,7 +3611,7 @@ async function action({ request }) {
     );
   }
 }
-const route14 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route11 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   action
 }, Symbol.toStringTag, { value: "Module" }));
@@ -3881,7 +3761,7 @@ function Index() {
     ] })
   ] });
 }
-const route15 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route12 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Index
 }, Symbol.toStringTag, { value: "Module" }));
@@ -4023,12 +3903,19 @@ function Chat() {
     /* @__PURE__ */ jsx(ChatInterface, {})
   ] }) });
 }
-const route16 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+const route13 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Chat,
   meta
 }, Symbol.toStringTag, { value: "Module" }));
-const serverManifest = { "entry": { "module": "/assets/entry.client-B8Mv-gBF.js", "imports": ["/assets/components-9TVjVNdt.js"], "css": [] }, "routes": { "root": { "id": "root", "parentId": void 0, "path": "", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": true, "module": "/assets/root-DrAtvtDe.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/ApplicationContext-DeSwkrAo.js", "/assets/MicrophoneIcon-At7u6jEd.js", "/assets/Button-CDHjtM4L.js", "/assets/Alert-BBZG7UN2.js"], "css": ["/assets/root-diWVXcXT.css"] }, "routes/api.resume-analysis.optimize": { "id": "routes/api.resume-analysis.optimize", "parentId": "routes/api.resume-analysis", "path": "optimize", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.resume-analysis.optimize-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.resume-analysis.format": { "id": "routes/api.resume-analysis.format", "parentId": "routes/api.resume-analysis", "path": "format", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.resume-analysis.format-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.documents.export": { "id": "routes/api.documents.export", "parentId": "root", "path": "api/documents/export", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.documents.export-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.resume-analysis": { "id": "routes/api.resume-analysis", "parentId": "root", "path": "api/resume-analysis", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.resume-analysis-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.documents.$id": { "id": "routes/api.documents.$id", "parentId": "root", "path": "api/documents/:id", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.documents._id-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.voice-notes": { "id": "routes/api.voice-notes", "parentId": "root", "path": "api/voice-notes", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.voice-notes-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/resume-analysis": { "id": "routes/resume-analysis", "parentId": "root", "path": "resume-analysis", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/resume-analysis-BJD1GOGG.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Select-B3oI0161.js", "/assets/Modal-Bz2tyEF1.js"], "css": [] }, "routes/auth.callback": { "id": "routes/auth.callback", "parentId": "root", "path": "auth/callback", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.callback-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/applications": { "id": "routes/applications", "parentId": "root", "path": "applications", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/applications-CxFal38D.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/ApplicationContext-DeSwkrAo.js", "/assets/Button-CDHjtM4L.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Modal-Bz2tyEF1.js", "/assets/Input-Dy9uozZT.js", "/assets/Select-B3oI0161.js", "/assets/Textarea-Aa5uwp8P.js", "/assets/EmptyState-CVykgcpg.js", "/assets/Alert-BBZG7UN2.js"], "css": [] }, "routes/auth.signout": { "id": "routes/auth.signout", "parentId": "root", "path": "auth/signout", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.signout-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/auth.verify": { "id": "routes/auth.verify", "parentId": "root", "path": "auth/verify", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.verify-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/voice-notes": { "id": "routes/voice-notes", "parentId": "root", "path": "voice-notes", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/voice-notes-43clmeS_.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Button-CDHjtM4L.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Select-B3oI0161.js", "/assets/Textarea-Aa5uwp8P.js", "/assets/MicrophoneIcon-At7u6jEd.js"], "css": [] }, "routes/documents": { "id": "routes/documents", "parentId": "root", "path": "documents", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/documents-Cwib5QfD.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Input-Dy9uozZT.js", "/assets/Select-B3oI0161.js", "/assets/Modal-Bz2tyEF1.js", "/assets/Alert-BBZG7UN2.js", "/assets/EmptyState-CVykgcpg.js"], "css": [] }, "routes/api.chat": { "id": "routes/api.chat", "parentId": "root", "path": "api/chat", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.chat-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/_index": { "id": "routes/_index", "parentId": "root", "path": void 0, "index": true, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/_index-D6D5gmSN.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Button-CDHjtM4L.js"], "css": [] }, "routes/chat": { "id": "routes/chat", "parentId": "root", "path": "chat", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/chat-Bm7BgaMG.js", "imports": ["/assets/components-9TVjVNdt.js", "/assets/Card-Bc0Lcq-1.js", "/assets/Button-CDHjtM4L.js", "/assets/Input-Dy9uozZT.js"], "css": [] } }, "url": "/assets/manifest-e93de8e6.js", "version": "e93de8e6" };
+function ApiRoute() {
+  return null;
+}
+const route14 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  default: ApiRoute
+}, Symbol.toStringTag, { value: "Module" }));
+const serverManifest = { "entry": { "module": "/assets/entry.client-D2x2jnhK.js", "imports": ["/assets/components-BTXmr68H.js"], "css": [] }, "routes": { "root": { "id": "root", "parentId": void 0, "path": "", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": true, "module": "/assets/root-DOdbTdVj.js", "imports": ["/assets/components-BTXmr68H.js", "/assets/ApplicationContext-DY6RkFxv.js", "/assets/AuthContext-BrU48O4c.js", "/assets/MicrophoneIcon-Cx_OqR3y.js", "/assets/Button-BZG3s6SU.js", "/assets/Alert-DdMCfCTw.js"], "css": ["/assets/root-Xn1bqVEP.css"] }, "routes/api.resume-analysis.optimize": { "id": "routes/api.resume-analysis.optimize", "parentId": "routes/api.resume-analysis", "path": "optimize", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.resume-analysis.optimize-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.resume-analysis.format": { "id": "routes/api.resume-analysis.format", "parentId": "routes/api.resume-analysis", "path": "format", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.resume-analysis.format-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.resume-analysis": { "id": "routes/api.resume-analysis", "parentId": "routes/api", "path": "resume-analysis", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.resume-analysis-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/api.voice-notes": { "id": "routes/api.voice-notes", "parentId": "routes/api", "path": "voice-notes", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.voice-notes-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/resume-analysis": { "id": "routes/resume-analysis", "parentId": "root", "path": "resume-analysis", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/resume-analysis-CDEigplr.js", "imports": ["/assets/components-BTXmr68H.js", "/assets/Card-Cg6ocORJ.js", "/assets/Button-BZG3s6SU.js", "/assets/Select-RG5OTrzS.js", "/assets/Modal-Cd9pgKqa.js", "/assets/Alert-DdMCfCTw.js"], "css": [] }, "routes/auth.callback": { "id": "routes/auth.callback", "parentId": "root", "path": "auth/callback", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.callback-DtCUJE-g.js", "imports": [], "css": [] }, "routes/applications": { "id": "routes/applications", "parentId": "root", "path": "applications", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/applications-c2pcrKaK.js", "imports": ["/assets/components-BTXmr68H.js", "/assets/ApplicationContext-DY6RkFxv.js", "/assets/Button-BZG3s6SU.js", "/assets/Card-Cg6ocORJ.js", "/assets/Modal-Cd9pgKqa.js", "/assets/Input-8y3g3GgE.js", "/assets/Select-RG5OTrzS.js", "/assets/Textarea-Bh5RDoem.js", "/assets/EmptyState-XxnvsSZc.js", "/assets/Alert-DdMCfCTw.js"], "css": [] }, "routes/auth.signout": { "id": "routes/auth.signout", "parentId": "root", "path": "auth/signout", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/auth.signout-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/voice-notes": { "id": "routes/voice-notes", "parentId": "root", "path": "voice-notes", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/voice-notes-DIW_yPb1.js", "imports": ["/assets/components-BTXmr68H.js", "/assets/Button-BZG3s6SU.js", "/assets/Card-Cg6ocORJ.js", "/assets/Select-RG5OTrzS.js", "/assets/Textarea-Bh5RDoem.js", "/assets/MicrophoneIcon-Cx_OqR3y.js"], "css": [] }, "routes/documents": { "id": "routes/documents", "parentId": "root", "path": "documents", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": true, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/documents-DVS2VPHJ.js", "imports": ["/assets/components-BTXmr68H.js", "/assets/Card-Cg6ocORJ.js", "/assets/Button-BZG3s6SU.js", "/assets/Input-8y3g3GgE.js", "/assets/Select-RG5OTrzS.js", "/assets/Modal-Cd9pgKqa.js", "/assets/Alert-DdMCfCTw.js", "/assets/EmptyState-XxnvsSZc.js", "/assets/AuthContext-BrU48O4c.js"], "css": [] }, "routes/api.chat": { "id": "routes/api.chat", "parentId": "routes/api", "path": "chat", "index": void 0, "caseSensitive": void 0, "hasAction": true, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api.chat-l0sNRNKZ.js", "imports": [], "css": [] }, "routes/_index": { "id": "routes/_index", "parentId": "root", "path": void 0, "index": true, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/_index-JUwUj2_e.js", "imports": ["/assets/components-BTXmr68H.js", "/assets/Button-BZG3s6SU.js"], "css": [] }, "routes/chat": { "id": "routes/chat", "parentId": "root", "path": "chat", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/chat-46frw54p.js", "imports": ["/assets/components-BTXmr68H.js", "/assets/Card-Cg6ocORJ.js", "/assets/Button-BZG3s6SU.js", "/assets/Input-8y3g3GgE.js"], "css": [] }, "routes/api": { "id": "routes/api", "parentId": "root", "path": "api", "index": void 0, "caseSensitive": void 0, "hasAction": false, "hasLoader": false, "hasClientAction": false, "hasClientLoader": false, "hasErrorBoundary": false, "module": "/assets/api-CSxRPO1x.js", "imports": [], "css": [] } }, "url": "/assets/manifest-ae2b053b.js", "version": "ae2b053b" };
 const mode = "production";
 const assetsBuildDirectory = "build\\client";
 const basename = "/";
@@ -4061,37 +3948,21 @@ const routes = {
     caseSensitive: void 0,
     module: route2
   },
-  "routes/api.documents.export": {
-    id: "routes/api.documents.export",
-    parentId: "root",
-    path: "api/documents/export",
+  "routes/api.resume-analysis": {
+    id: "routes/api.resume-analysis",
+    parentId: "routes/api",
+    path: "resume-analysis",
     index: void 0,
     caseSensitive: void 0,
     module: route3
   },
-  "routes/api.resume-analysis": {
-    id: "routes/api.resume-analysis",
-    parentId: "root",
-    path: "api/resume-analysis",
+  "routes/api.voice-notes": {
+    id: "routes/api.voice-notes",
+    parentId: "routes/api",
+    path: "voice-notes",
     index: void 0,
     caseSensitive: void 0,
     module: route4
-  },
-  "routes/api.documents.$id": {
-    id: "routes/api.documents.$id",
-    parentId: "root",
-    path: "api/documents/:id",
-    index: void 0,
-    caseSensitive: void 0,
-    module: route5
-  },
-  "routes/api.voice-notes": {
-    id: "routes/api.voice-notes",
-    parentId: "root",
-    path: "api/voice-notes",
-    index: void 0,
-    caseSensitive: void 0,
-    module: route6
   },
   "routes/resume-analysis": {
     id: "routes/resume-analysis",
@@ -4099,7 +3970,7 @@ const routes = {
     path: "resume-analysis",
     index: void 0,
     caseSensitive: void 0,
-    module: route7
+    module: route5
   },
   "routes/auth.callback": {
     id: "routes/auth.callback",
@@ -4107,7 +3978,7 @@ const routes = {
     path: "auth/callback",
     index: void 0,
     caseSensitive: void 0,
-    module: route8
+    module: route6
   },
   "routes/applications": {
     id: "routes/applications",
@@ -4115,7 +3986,7 @@ const routes = {
     path: "applications",
     index: void 0,
     caseSensitive: void 0,
-    module: route9
+    module: route7
   },
   "routes/auth.signout": {
     id: "routes/auth.signout",
@@ -4123,15 +3994,7 @@ const routes = {
     path: "auth/signout",
     index: void 0,
     caseSensitive: void 0,
-    module: route10
-  },
-  "routes/auth.verify": {
-    id: "routes/auth.verify",
-    parentId: "root",
-    path: "auth/verify",
-    index: void 0,
-    caseSensitive: void 0,
-    module: route11
+    module: route8
   },
   "routes/voice-notes": {
     id: "routes/voice-notes",
@@ -4139,7 +4002,7 @@ const routes = {
     path: "voice-notes",
     index: void 0,
     caseSensitive: void 0,
-    module: route12
+    module: route9
   },
   "routes/documents": {
     id: "routes/documents",
@@ -4147,15 +4010,15 @@ const routes = {
     path: "documents",
     index: void 0,
     caseSensitive: void 0,
-    module: route13
+    module: route10
   },
   "routes/api.chat": {
     id: "routes/api.chat",
-    parentId: "root",
-    path: "api/chat",
+    parentId: "routes/api",
+    path: "chat",
     index: void 0,
     caseSensitive: void 0,
-    module: route14
+    module: route11
   },
   "routes/_index": {
     id: "routes/_index",
@@ -4163,7 +4026,7 @@ const routes = {
     path: void 0,
     index: true,
     caseSensitive: void 0,
-    module: route15
+    module: route12
   },
   "routes/chat": {
     id: "routes/chat",
@@ -4171,7 +4034,15 @@ const routes = {
     path: "chat",
     index: void 0,
     caseSensitive: void 0,
-    module: route16
+    module: route13
+  },
+  "routes/api": {
+    id: "routes/api",
+    parentId: "root",
+    path: "api",
+    index: void 0,
+    caseSensitive: void 0,
+    module: route14
   }
 };
 export {

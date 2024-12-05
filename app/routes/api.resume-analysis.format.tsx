@@ -3,6 +3,7 @@ import { getDocument, createDocument } from "~/models/document.server";
 import { verifyToken } from "~/models/user.server";
 import fetch from "node-fetch";
 import type { Document } from "~/types/document";
+import { ObjectId } from "mongodb";
 
 interface FormattingResult {
   formattedContent: string;
@@ -18,6 +19,16 @@ interface AnthropicResponse {
   model: string;
   role: string;
   type: string;
+}
+
+// Helper function to validate MongoDB ObjectId
+function isValidObjectId(id: string): boolean {
+  try {
+    new ObjectId(id);
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 async function formatWithAnthropic(content: string): Promise<string> {
@@ -136,7 +147,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
   if (!token) {
     return json(
-      { error: "Not authenticated" },
+      { error: "Please sign in to format your resume" },
       { status: 401 }
     );
   }
@@ -145,7 +156,7 @@ export async function action({ request }: ActionFunctionArgs) {
     const user = await verifyToken(token);
     if (!user) {
       return json(
-        { error: "Invalid authentication" },
+        { error: "Your session has expired. Please sign in again." },
         { status: 401 }
       );
     }
@@ -159,12 +170,20 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
+    // Validate document ID format
+    if (!isValidObjectId(resumeId)) {
+      return json(
+        { error: "Invalid resume ID format. The document might have been deleted." },
+        { status: 400 }
+      );
+    }
+
     // Get document
     const resume = await getDocument(resumeId, user.id);
 
     if (!resume) {
       return json(
-        { error: "Resume not found" },
+        { error: "Resume not found. It might have been deleted." },
         { status: 404 }
       );
     }
@@ -187,7 +206,7 @@ export async function action({ request }: ActionFunctionArgs) {
   } catch (error) {
     console.error("Error formatting resume:", error);
     return json(
-      { error: error instanceof Error ? error.message : "Failed to format resume" },
+      { error: error instanceof Error ? error.message : "Failed to format resume. Please try again." },
       { status: 500 }
     );
   }
