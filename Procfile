@@ -1,1 +1,1 @@
-web: node ./node_modules/@remix-run/serve/dist/cli.js ./build/server/index.js
+web: npm run build && npm start
